@@ -1,0 +1,34 @@
+[package]
+name = 'todorpc_web'
+version = '0.1.0'
+authors = ['hjiayz <hjiayz@gmail.com>']
+edition = '2018'
+license = 'MIT OR Apache-2.0'
+
+[dependencies]
+js-sys = '0.3.36'
+futures = '0.3.4'
+wasm-bindgen-futures = '0.4.9'
+
+[dependencies.wasm-bindgen]
+version = '0.2.59'
+features = ['serde-serialize']
+
+[dependencies.todorpc]
+path = '../todorpc'
+
+[dependencies.todorpc_client_core]
+path = '../todorpc_client_core'
+
+[dependencies.web-sys]
+version = '0.3.22'
+features = [
+    'ErrorEvent',
+    'MessageEvent',
+    'WebSocket',
+    'console',
+    'CloseEvent',
+    'BinaryType',
+    'Window',
+    'EventTarget',
+]

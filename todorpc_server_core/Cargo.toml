@@ -1,0 +1,22 @@
+[package]
+name = 'todorpc_server_core'
+version = '0.1.0'
+authors = ['hjiayz <hjiayz@gmail.com>']
+edition = '2018'
+license = 'MIT OR Apache-2.0'
+
+[dependencies]
+serde = '1.0.105'
+bincode = '1.2.1'
+
+[dependencies.tokio]
+version = '0.2.13'
+features = [
+    'io-util',
+    'sync',
+    'stream',
+    'rt-core',
+]
+
+[dependencies.todorpc]
+path = '../todorpc'

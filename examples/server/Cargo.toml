@@ -1,0 +1,16 @@
+[package]
+name = "server"
+version = "0.1.0"
+authors = ["hjiayz <hjiayz@gmail.com>"]
+edition = "2018"
+license = "MIT OR Apache-2.0"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+todorpc_server_tcp = { path = '../../todorpc_server_tcp/' }
+todorpc_server_websocket = { path = '../../todorpc_server_websocket/' }
+todorpc = { path = '../../todorpc' }
+tokio = {version= "0.2.13",features=["io-util","sync","stream","rt-core","macros","time"]}
+serde = {version= "1.0.105",features=["derive"]}
+define = { path = '../define' }

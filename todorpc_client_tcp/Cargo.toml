@@ -1,0 +1,27 @@
+[package]
+name = 'todorpc_client_tcp'
+version = '0.1.0'
+authors = ['hjiayz <hjiayz@gmail.com>']
+edition = '2018'
+license = 'MIT OR Apache-2.0'
+
+[dependencies]
+futures = '0.3.4'
+
+[dependencies.todorpc]
+path = '../todorpc'
+
+[dependencies.todorpc_client_core]
+path = '../todorpc_client_core'
+
+[dependencies.tokio]
+version = '0.2.13'
+features = [
+    'io-util',
+    'sync',
+    'stream',
+    'rt-core',
+    'dns',
+    'tcp',
+    'time',
+]

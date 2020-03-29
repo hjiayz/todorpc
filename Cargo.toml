@@ -1,0 +1,16 @@
+[workspace]
+members = [
+    'todorpc',
+    'todorpc_web',
+    'todorpc_server_core',
+    'todorpc_server_websocket',
+    'todorpc_server_tcp',
+    'todorpc_client_tcp',
+    'todorpc_client_core',
+    'examples/wsclient',
+    'examples/server',
+    'examples/tcpclient',
+    'examples/define',
+]
+[profile.release]
+lto = true

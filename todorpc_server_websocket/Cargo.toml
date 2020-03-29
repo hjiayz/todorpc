@@ -1,0 +1,23 @@
+[package]
+name = 'todorpc_server_websocket'
+version = '0.1.0'
+authors = ['hjiayz <hjiayz@gmail.com>']
+edition = '2018'
+license = 'MIT OR Apache-2.0'
+
+[dependencies]
+tokio-tungstenite = '0.10.1'
+tungstenite = '0.10.1'
+futures = '0.3.4'
+
+[dependencies.todorpc_server_core]
+path = '..\todorpc_server_core\'
+
+[dependencies.tokio]
+version = '0.2.13'
+features = [
+    'io-util',
+    'sync',
+    'stream',
+    'rt-core',
+]

@@ -1,0 +1,28 @@
+<html>
+  <head>
+    <meta content="text/html;charset=utf-8" http-equiv="Content-Type"/>
+  </head>
+  <body>
+    <script type="module">
+      import init,{call_foo,connect_ws,subscribe_bar} from './pkg/wsclient.js';
+
+      async function run(){
+        await init();
+        await connect_ws();
+        subscribe_bar(val=>{
+          document.body.innerHTML="<div>bar:"+val+"</div>";
+        })
+        
+        let i = 0;
+        setInterval(() => {
+          call_foo(i++).then(val=>{
+            document.body.innerHTML="<div>foo:"+val+"</div>";
+          }).catch(e=>{
+            document.body.innerHTML="<div>foo err:"+e+"</div>";
+          })
+        }, 1);
+      }
+      run();
+    </script>
+  </body>
+</html>
