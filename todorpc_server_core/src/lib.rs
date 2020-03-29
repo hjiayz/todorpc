@@ -62,6 +62,7 @@ pub async fn write_stream<W: AsyncWrite + Unpin>(n: &mut W, m: Message) -> IoRes
     buf.extend_from_slice(&h);
     buf.extend_from_slice(msg.as_slice());
     n.write_all(&buf).await?;
+    n.flush().await?;
     Ok(())
 }
 

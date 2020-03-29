@@ -3,24 +3,37 @@
     <meta content="text/html;charset=utf-8" http-equiv="Content-Type"/>
   </head>
   <body>
+    <ul>
+      <li>call foo</li>
+      <li id = "call_foo"></li>
+      <li>call foo2</li>
+      <li id = "call_foo2"></li>
+      <li>subscribe bar</li>
+      <li id = "subscribe_bar"></li>
+    </ul>
     <script type="module">
-      import init,{call_foo,connect_ws,subscribe_bar} from './pkg/wsclient.js';
+      import init,{call_foo,call_foo2,connect_ws,subscribe_bar} from './pkg/wsclient.js';
 
       async function run(){
         await init();
         await connect_ws();
-        subscribe_bar(val=>{
-          document.body.innerHTML="<div>bar:"+val+"</div>";
+        subscribe_bar( val => {
+          document.getElementById("subscribe_bar").innerText = val;
         })
-        
-        let i = 0;
-        setInterval(() => {
-          call_foo(i++).then(val=>{
-            document.body.innerHTML="<div>foo:"+val+"</div>";
-          }).catch(e=>{
-            document.body.innerHTML="<div>foo err:"+e+"</div>";
-          })
-        }, 1);
+        async function foo(){
+          let i = 0;
+          while (true){
+            document.getElementById("call_foo").innerText = await call_foo(i++);
+          }
+        }
+        async function foo2(){
+          let i = 0;
+          while (true){
+            document.getElementById("call_foo2").innerText = await call_foo2(i++);
+          }
+        }
+        foo();
+        foo2();
       }
       run();
     </script>

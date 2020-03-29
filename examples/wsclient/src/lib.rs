@@ -1,12 +1,8 @@
 use define::*;
 use js_sys::{Error, Function, Promise};
-use todorpc_web::{async_call, subscribe, WSRpc};
+use todorpc_web::{async_call, call, subscribe, WSRpc};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::future_to_promise;
-
-macro_rules! console_log {
-    ($($t:tt)*) => (log(&format_args!($($t)*).to_string()))
-}
 
 #[wasm_bindgen]
 extern "C" {
@@ -46,6 +42,27 @@ async fn async_call_foo(val: u32) -> Result<JsValue, JsValue> {
 #[wasm_bindgen]
 pub fn call_foo(val: u32) -> Promise {
     future_to_promise(async_call_foo(val))
+}
+
+#[wasm_bindgen]
+pub fn call_foo2(val: u32) -> Promise {
+    let mut cb = |resolve: Function, reject: Function| unsafe {
+        call(Foo(val), CONN.as_ref().unwrap(), move |res| {
+            match res {
+                Ok(val) => {
+                    resolve
+                        .call1(&JsValue::UNDEFINED, &JsValue::from(val))
+                        .unwrap();
+                }
+                Err(e) => {
+                    reject
+                        .call1(&JsValue::UNDEFINED, &JsValue::from(format!("{:?}", e)))
+                        .unwrap();
+                }
+            };
+        });
+    };
+    Promise::new(&mut cb)
 }
 
 #[wasm_bindgen]

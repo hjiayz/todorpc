@@ -16,17 +16,18 @@ struct Inner {
     next_id: u32,
     ws: WebSocket,
     on_msgs: BTreeMap<u32, Box<dyn Fn(RPCResult<Vec<u8>>) -> bool>>,
-    onmessage_callback:Option<Closure<dyn FnMut(MessageEvent)>>,
-    onerror_callback:Option<Closure<dyn FnMut(ErrorEvent)>>,
-    onclose_callback:Option<Closure<dyn FnMut(CloseEvent)>>,
-    onopen_callback:Option<Closure<dyn FnMut(EventTarget)>>,
+    onmessage_callback: Option<Closure<dyn FnMut(MessageEvent)>>,
+    onerror_callback: Option<Closure<dyn FnMut(ErrorEvent)>>,
+    onclose_callback: Option<Closure<dyn FnMut(CloseEvent)>>,
+    onopen_callback: Option<Closure<dyn FnMut(EventTarget)>>,
 }
 
 impl Drop for Inner {
     fn drop(&mut self) {
-        let onclose_callback = Closure::wrap(Box::new(move |_: CloseEvent| {
-        }) as Box<dyn FnMut(CloseEvent)>);
-        self.ws.set_onclose(Some(onclose_callback.as_ref().unchecked_ref()));
+        let onclose_callback =
+            Closure::wrap(Box::new(move |_: CloseEvent| {}) as Box<dyn FnMut(CloseEvent)>);
+        self.ws
+            .set_onclose(Some(onclose_callback.as_ref().unchecked_ref()));
         onclose_callback.forget();
         self.ws.close().unwrap();
     }
@@ -44,10 +45,10 @@ impl WSRpc {
             ws: WebSocket::new(url)
                 .map_err(|e| RPCError::Other(String::from(Object::from(e).to_string())))?,
             on_msgs: BTreeMap::new(),
-            onmessage_callback:None,
-            onerror_callback:None,
-            onclose_callback:None,
-            onopen_callback:None,
+            onmessage_callback: None,
+            onerror_callback: None,
+            onclose_callback: None,
+            onopen_callback: None,
         }));
         let inner2 = Rc::downgrade(&inner);
         let onmessage_callback = Closure::wrap(Box::new(move |e: MessageEvent| {
@@ -110,15 +111,15 @@ impl WSRpc {
             .ws
             .set_onopen(Some(onopen_callback.as_ref().unchecked_ref()));
         //onopen_callback.forget();
-        borrowed.onmessage_callback=Some(onmessage_callback);
-        borrowed.onerror_callback=Some(onerror_callback);
-        borrowed.onclose_callback=Some(onclose_callback);
-        borrowed.onopen_callback=Some(onopen_callback);
+        borrowed.onmessage_callback = Some(onmessage_callback);
+        borrowed.onerror_callback = Some(onerror_callback);
+        borrowed.onclose_callback = Some(onclose_callback);
+        borrowed.onopen_callback = Some(onopen_callback);
         drop(borrowed);
         drop(inner);
         receiver.await.unwrap()
     }
-    pub fn count(&self)->usize{
+    pub fn count(&self) -> usize {
         Rc::strong_count(&self.inner)
     }
 }
