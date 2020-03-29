@@ -3,7 +3,7 @@ use futures::channel::oneshot;
 use std::cell::RefCell;
 use std::io::{Error as IoError, Read, Write};
 use std::mem::transmute;
-use todorpc::{Call, Error as RPCError, Message, Result as RPCResult, Subscribe};
+use todorpc::{Call, Error as RPCError, Response, Result as RPCResult, Subscribe};
 
 pub trait Connect<S> {
     fn is_connected(&self) -> bool;
@@ -210,13 +210,11 @@ fn from_io_result(src: IoError) -> RPCError {
     RPCError::IoError(src.to_string())
 }
 
-pub fn read_msg<R: Read>(n: &mut R) -> RPCResult<Message> {
-    let mut h = [0u8; 16];
+pub fn read_msg<R: Read>(n: &mut R) -> RPCResult<Response> {
+    let mut h = [0u8; 12];
     n.read_exact(&mut h).map_err(from_io_result)?;
-    let (len_buf, channel_id_buf, msg_id_buf): ([u8; 8], [u8; 4], [u8; 4]) =
-        unsafe { transmute(h) };
+    let (len_buf, msg_id_buf): ([u8; 8], [u8; 4]) = unsafe { transmute(h) };
     let len = u64::from_be_bytes(len_buf) as usize;
-    let channel_id = u32::from_be_bytes(channel_id_buf);
     let msg_id = u32::from_be_bytes(msg_id_buf);
 
     let mut msg_bytes = Vec::with_capacity(len);
@@ -225,9 +223,5 @@ pub fn read_msg<R: Read>(n: &mut R) -> RPCResult<Message> {
     };
     n.read_exact(&mut msg_bytes).map_err(from_io_result)?;
     let msg = msg_bytes;
-    Ok(Message {
-        channel_id,
-        msg_id,
-        msg,
-    })
+    Ok(Response { msg_id, msg })
 }

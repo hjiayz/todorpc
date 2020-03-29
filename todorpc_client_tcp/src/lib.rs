@@ -15,14 +15,12 @@ fn map_io_err(src: IoError) -> Error {
     Error::IoError(format!("{:?}", src))
 }
 
-async fn read_msg_async<R: AsyncRead + Unpin>(n: &mut R) -> Result<Message> {
+async fn read_msg_async<R: AsyncRead + Unpin>(n: &mut R) -> Result<Response> {
     use std::mem::transmute;
-    let mut h = [0u8; 16];
+    let mut h = [0u8; 12];
     n.read_exact(&mut h).await.map_err(map_io_err)?;
-    let (len_buf, channel_id_buf, msg_id_buf): ([u8; 8], [u8; 4], [u8; 4]) =
-        unsafe { transmute(h) };
+    let (len_buf, msg_id_buf): ([u8; 8], [u8; 4]) = unsafe { transmute(h) };
     let len = u64::from_be_bytes(len_buf) as usize;
-    let channel_id = u32::from_be_bytes(channel_id_buf);
     let msg_id = u32::from_be_bytes(msg_id_buf);
 
     let mut msg_bytes = Vec::with_capacity(len);
@@ -31,11 +29,7 @@ async fn read_msg_async<R: AsyncRead + Unpin>(n: &mut R) -> Result<Message> {
     };
     n.read_exact(&mut msg_bytes).await.map_err(map_io_err)?;
     let msg = msg_bytes;
-    Ok(Message {
-        channel_id,
-        msg_id,
-        msg,
-    })
+    Ok(Response { msg_id, msg })
 }
 
 struct Inner {

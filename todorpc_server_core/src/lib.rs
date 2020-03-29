@@ -8,7 +8,7 @@ use std::mem::transmute;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::RwLock;
-use todorpc::{Call, Error, Message, Result as RPCResult, Subscribe};
+use todorpc::{Call, Error, Message, Response, Result as RPCResult, Subscribe};
 use tokio::io::AsyncRead;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWrite;
@@ -51,14 +51,13 @@ pub async fn read_stream<R: AsyncRead + Unpin>(n: &mut R) -> IoResult<Message> {
     Ok(msg)
 }
 
-pub async fn write_stream<W: AsyncWrite + Unpin>(n: &mut W, m: Message) -> IoResult<()> {
+pub async fn write_stream<W: AsyncWrite + Unpin>(n: &mut W, m: Response) -> IoResult<()> {
     let msg = &m.msg;
     let len = msg.len();
     let len_buf = (msg.len() as u64).to_be_bytes();
-    let channel_id_buf = m.channel_id.to_be_bytes();
     let msg_id_buf = m.msg_id.to_be_bytes();
-    let h: [u8; 16] = unsafe { transmute((len_buf, channel_id_buf, msg_id_buf)) };
-    let mut buf = Vec::with_capacity(16 + len);
+    let h: [u8; 12] = unsafe { transmute((len_buf, msg_id_buf)) };
+    let mut buf = Vec::with_capacity(12 + len);
     buf.extend_from_slice(&h);
     buf.extend_from_slice(msg.as_slice());
     n.write_all(&buf).await?;
@@ -95,14 +94,13 @@ pub async fn on_stream<S: IoStream>(iostream: S, channels: Arc<Channels>) {
     }
 }
 pub struct ContextWithSender<T> {
-    sender: UnboundedSender<Message>,
+    sender: UnboundedSender<Response>,
     ctx: Context,
     pd: PhantomData<T>,
 }
 
 fn send<T: Serialize + 'static>(
-    sender: &UnboundedSender<Message>,
-    channel_id: u32,
+    sender: &UnboundedSender<Response>,
     msg_id: u32,
     msg: &T,
 ) -> RPCResult<()> {
@@ -111,18 +109,14 @@ fn send<T: Serialize + 'static>(
     }
     let msg = serialize(msg)?;
     sender
-        .send(Message {
-            msg,
-            channel_id,
-            msg_id,
-        })
+        .send(Response { msg, msg_id })
         .map_err(|_| Error::ChannelClosed)?;
     Ok(())
 }
 
 impl<T: Serialize + 'static> ContextWithSender<T> {
     pub fn send(&self, msg: &T) -> RPCResult<()> {
-        send(&self.sender, self.ctx.channel_id(), self.ctx.msg_id(), msg)
+        send(&self.sender, self.ctx.msg_id(), msg)
     }
     pub fn channel_id(&self) -> u32 {
         self.ctx.channel_id()
@@ -174,7 +168,7 @@ pub struct Channels {
         Box<
             dyn Fn(
                     &[u8],
-                    UnboundedSender<Message>,
+                    UnboundedSender<Response>,
                     u32,
                     Arc<RwLock<Vec<u8>>>,
                 ) -> Pin<Box<dyn Future<Output = ()> + Send + Sync>>
@@ -204,7 +198,7 @@ impl Channels {
             rpc_channel,
             Box::new(
                 move |bytes: &[u8],
-                      sender: UnboundedSender<Message>,
+                      sender: UnboundedSender<Response>,
                       msg_id: u32,
                       token: Arc<RwLock<Vec<u8>>>| {
                     let param = deserialize(bytes).map_err(Error::from).and_then(|repo: R| {
@@ -248,7 +242,7 @@ impl Channels {
             rpc_channel,
             Box::new(
                 move |bytes: &[u8],
-                      sender: UnboundedSender<Message>,
+                      sender: UnboundedSender<Response>,
                       msg_id: u32,
                       token: Arc<RwLock<Vec<u8>>>| {
                     let param = deserialize(bytes).map_err(Error::from).and_then(|repo: R| {
@@ -267,7 +261,7 @@ impl Channels {
                     let result = p(param, ctx);
                     Box::pin(async move {
                         let msg = result.await;
-                        if let Err(e) = send(&sender, R::rpc_channel(), msg_id, &msg) {
+                        if let Err(e) = send(&sender, msg_id, &msg) {
                             println!("{:?}", e);
                         }
                     })
@@ -283,7 +277,7 @@ impl Channels {
     pub async fn on_message(
         &self,
         msg: Message,
-        unbounded_channel: UnboundedSender<Message>,
+        unbounded_channel: UnboundedSender<Response>,
         token: Arc<RwLock<Vec<u8>>>,
     ) {
         if let Some(f) = self.channels.get(&msg.channel_id) {

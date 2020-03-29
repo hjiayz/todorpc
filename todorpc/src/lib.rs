@@ -40,3 +40,9 @@ pub struct Message {
     pub msg_id: u32,
     pub msg: Vec<u8>,
 }
+
+#[derive(Debug)]
+pub struct Response {
+    pub msg_id: u32,
+    pub msg: Vec<u8>,
+}
