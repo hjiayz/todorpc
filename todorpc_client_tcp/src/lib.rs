@@ -33,6 +33,7 @@ async fn read_msg_async<R: AsyncRead + Unpin>(n: &mut R) -> Result<Response> {
 }
 
 struct Inner {
+    sender: Mutex<Option<mpsc::UnboundedSender<Vec<u8>>>>,
     on_msgs: Mutex<BTreeMap<u32, Box<dyn Fn(Result<Vec<u8>>) -> bool + Send>>>,
     is_connected: AtomicBool,
     next_id: AtomicU32,
@@ -40,7 +41,6 @@ struct Inner {
 
 #[derive(Clone)]
 pub struct TcpClient {
-    sender: mpsc::UnboundedSender<Vec<u8>>,
     inner: Arc<Inner>,
 }
 
@@ -51,11 +51,12 @@ impl TcpClient {
             Mutex::new(BTreeMap::new());
         let (sender, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
         let inner = Arc::new(Inner {
+            sender: Mutex::new(Some(sender)),
             on_msgs,
             is_connected: AtomicBool::new(true),
             next_id: AtomicU32::new(0),
         });
-        let client = TcpClient { sender, inner };
+        let client = TcpClient { inner };
         let inner2 = client.inner.clone();
         tokio::spawn(async move {
             loop {
@@ -118,6 +119,13 @@ impl TcpClient {
                 }
             }
             inner3.is_connected.store(false, Ordering::SeqCst);
+            let mut lock = loop {
+                if let Ok(lock) = inner3.sender.try_lock() {
+                    break lock;
+                }
+                delay_for(Duration::from_millis(0)).await;
+            };
+            lock.take();
         });
         client
     }
@@ -128,9 +136,22 @@ impl Connect<Box<dyn Fn(Result<Vec<u8>>) -> bool + 'static + Send>> for TcpClien
         self.inner.is_connected.load(Ordering::SeqCst)
     }
     fn send<F: FnOnce(&Self, Result<()>) + 'static + Send>(&self, bytes: &[u8], cb: F) {
-        if let Err(_) = self.sender.send(bytes.to_owned()) {
-            cb(self, Err(Error::ChannelClosed))
-        };
+        let client: TcpClient = self.to_owned();
+        let bytes: Vec<u8> = bytes.to_owned();
+        tokio::task::spawn(async move {
+            let lock = loop {
+                if let Ok(lock) = client.inner.sender.try_lock() {
+                    break lock;
+                }
+                delay_for(Duration::from_millis(0)).await;
+            };
+            if lock.is_none() {
+                return cb(&client, Err(Error::ChannelClosed));
+            }
+            if let Err(_) = lock.as_ref().unwrap().send(bytes) {
+                cb(&client, Err(Error::ChannelClosed));
+            };
+        });
     }
     fn on_msg<F2: FnOnce(&Self, u32) + 'static + Send>(
         &self,

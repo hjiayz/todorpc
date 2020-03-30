@@ -10,7 +10,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     subscribe(Bar, &client, |res| {
         match res {
             Ok((s, i)) => println!("bar: {} {}", s, i),
-            Err(e) => println!("foo: {:?}", e),
+            Err(e) => println!("bar: {:?}", e),
         }
         false
     });
