@@ -8,7 +8,7 @@ use std::mem::transmute;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::RwLock;
-use todorpc::{Call, Error, Message, Response, Result as RPCResult, Subscribe};
+use todorpc::{Call, Error, Message, Response, Result as RPCResult, Subscribe, RPC};
 use tokio::io::AsyncRead;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWrite;
@@ -118,9 +118,6 @@ impl<T: Serialize + 'static> ContextWithSender<T> {
     pub fn send(&self, msg: &T) -> RPCResult<()> {
         send(&self.sender, self.ctx.msg_id(), msg)
     }
-    pub fn channel_id(&self) -> u32 {
-        self.ctx.channel_id()
-    }
     pub fn msg_id(&self) -> u32 {
         self.ctx.msg_id()
     }
@@ -133,15 +130,11 @@ impl<T: Serialize + 'static> ContextWithSender<T> {
 }
 
 pub struct Context {
-    channel_id: u32,
     msg_id: u32,
     token: Arc<RwLock<Vec<u8>>>,
 }
 
 impl Context {
-    pub fn channel_id(&self) -> u32 {
-        self.channel_id
-    }
     pub fn msg_id(&self) -> u32 {
         self.msg_id
     }
@@ -178,6 +171,16 @@ pub struct Channels {
     >,
 }
 
+fn decode<R: RPC>(bytes: &[u8]) -> RPCResult<R> {
+    deserialize(bytes).map_err(Error::from).and_then(|repo: R| {
+        if repo.verify() {
+            Ok(repo)
+        } else {
+            Err(Error::VerifyFailed)
+        }
+    })
+}
+
 impl Channels {
     pub fn new() -> Channels {
         Channels {
@@ -201,19 +204,8 @@ impl Channels {
                       sender: UnboundedSender<Response>,
                       msg_id: u32,
                       token: Arc<RwLock<Vec<u8>>>| {
-                    let param = deserialize(bytes).map_err(Error::from).and_then(|repo: R| {
-                        if repo.verify() {
-                            Ok(repo)
-                        } else {
-                            Err(Error::VerifyFailed)
-                        }
-                    });
-                    let channel_id = R::rpc_channel();
-                    let ctx = Context {
-                        channel_id,
-                        msg_id,
-                        token,
-                    };
+                    let param = decode::<R>(bytes);
+                    let ctx = Context { msg_id, token };
                     let ctx_with_sender = ContextWithSender::<R::Return> {
                         sender,
                         ctx,
@@ -245,19 +237,8 @@ impl Channels {
                       sender: UnboundedSender<Response>,
                       msg_id: u32,
                       token: Arc<RwLock<Vec<u8>>>| {
-                    let param = deserialize(bytes).map_err(Error::from).and_then(|repo: R| {
-                        if repo.verify() {
-                            Ok(repo)
-                        } else {
-                            Err(Error::VerifyFailed)
-                        }
-                    });
-                    let channel_id = R::rpc_channel();
-                    let ctx = Context {
-                        channel_id,
-                        msg_id,
-                        token,
-                    };
+                    let param = decode::<R>(bytes);
+                    let ctx = Context { msg_id, token };
                     let result = p(param, ctx);
                     Box::pin(async move {
                         let msg = result.await;
