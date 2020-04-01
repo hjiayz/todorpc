@@ -1,41 +1,76 @@
 <html>
-  <head>
-    <meta content="text/html;charset=utf-8" http-equiv="Content-Type"/>
-  </head>
-  <body>
-    <ul>
-      <li>call foo</li>
-      <li id = "call_foo"></li>
-      <li>call foo2</li>
-      <li id = "call_foo2"></li>
-      <li>subscribe bar</li>
-      <li id = "subscribe_bar"></li>
-    </ul>
-    <script type="module">
-      import init,{call_foo,call_foo2,connect_ws,subscribe_bar} from './pkg/wsclient.js';
 
-      async function run(){
-        await init();
-        await connect_ws();
-        subscribe_bar( val => {
-          document.getElementById("subscribe_bar").innerText = val;
-        })
-        async function foo(){
-          let i = 0;
-          while (true){
-            document.getElementById("call_foo").innerText = await call_foo(i++);
-          }
+<head>
+  <meta content="text/html;charset=utf-8" http-equiv="Content-Type" />
+</head>
+
+<body>
+  <ul>
+    <li>call foo</li>
+    <li id="call_foo"></li>
+    <li>call foo2</li>
+    <li id="call_foo2"></li>
+    <li>subscribe bar</li>
+    <li id="subscribe_bar"></li>
+    <li>call foo tls</li>
+    <li id="call_foo_tls"></li>
+    <li>call foo2 tls</li>
+    <li id="call_foo2_tls"></li>
+    <li>subscribe bar tls</li>
+    <li id="subscribe_bar_tls"></li>
+  </ul>
+  <script type="module">
+    import init, { call_foo, call_foo2, connect_ws, connect_wss, subscribe_bar } from './pkg/wsclient.js';
+    function wait() {
+      return new Promise((res) => setTimeout(res, 1000))
+    }
+    async function run() {
+      await init();
+      await connect_ws();
+      await connect_wss();
+      subscribe_bar(val => {
+        if (val instanceof Error) return;
+        document.getElementById("subscribe_bar").innerText = val;
+      }, false)
+      async function foo() {
+        let i = 0;
+        while (true) {
+          document.getElementById("call_foo").innerText = await call_foo(i++, false);
+          await wait();
         }
-        async function foo2(){
-          let i = 0;
-          while (true){
-            document.getElementById("call_foo2").innerText = await call_foo2(i++);
-          }
-        }
-        foo();
-        foo2();
       }
-      run();
-    </script>
-  </body>
+      async function foo2() {
+        let i = 0;
+        while (true) {
+          document.getElementById("call_foo2").innerText = await call_foo2(i++, false);
+          await wait();
+        }
+      }
+      subscribe_bar(val => {
+        if (val instanceof Error) return;
+        document.getElementById("subscribe_bar_tls").innerText = val;
+      }, true)
+      async function foo_tls() {
+        let i = 0;
+        while (true) {
+          document.getElementById("call_foo_tls").innerText = await call_foo(i++, true);
+          await wait();
+        }
+      }
+      async function foo2_tls() {
+        let i = 0;
+        while (true) {
+          document.getElementById("call_foo2_tls").innerText = await call_foo2(i++, true);
+          await wait();
+        }
+      }
+      foo_tls();
+      foo2_tls();
+      foo();
+      foo2();
+    }
+    run();
+  </script>
+</body>
+
 </html>

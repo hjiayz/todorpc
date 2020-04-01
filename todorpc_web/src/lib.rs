@@ -78,7 +78,7 @@ impl WSRpc {
         borrowed
             .ws
             .set_onmessage(Some(onmessage_callback.as_ref().unchecked_ref()));
-        //onmessage_callback.forget();
+
         let inner5 = Rc::downgrade(&inner);
         let onerror_callback = Closure::wrap(Box::new(move |_: ErrorEvent| {
             let _ = inner5.upgrade().unwrap().borrow().ws.close();
@@ -86,7 +86,6 @@ impl WSRpc {
         borrowed
             .ws
             .set_onerror(Some(onerror_callback.as_ref().unchecked_ref()));
-        //onerror_callback.forget();
 
         let inner6 = Rc::downgrade(&inner);
         let onclose_callback = Closure::wrap(Box::new(move |_: CloseEvent| {
@@ -100,7 +99,7 @@ impl WSRpc {
         borrowed
             .ws
             .set_onclose(Some(onclose_callback.as_ref().unchecked_ref()));
-        //onclose_callback.forget();
+
         let (sender, receiver) = oneshot::channel::<RPCResult<WSRpc>>();
         let inner7 = inner.clone();
         let onopen_callback = Closure::once(Box::new(move |_: EventTarget| {
@@ -110,7 +109,7 @@ impl WSRpc {
         borrowed
             .ws
             .set_onopen(Some(onopen_callback.as_ref().unchecked_ref()));
-        //onopen_callback.forget();
+
         borrowed.onmessage_callback = Some(onmessage_callback);
         borrowed.onerror_callback = Some(onerror_callback);
         borrowed.onclose_callback = Some(onclose_callback);

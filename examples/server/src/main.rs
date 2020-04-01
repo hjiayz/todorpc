@@ -1,8 +1,11 @@
 use define::*;
+use native_tls::{Identity, TlsAcceptor};
 use std::result::Result as StdResult;
 use todorpc::*;
 use todorpc_server_tcp::TcpRPCServer;
 use todorpc_server_websocket::*;
+use tokio::fs::File;
+use tokio::io::AsyncReadExt;
 
 async fn foo(res: Result<Foo>, _ctx: Context) -> u32 {
     match res {
@@ -31,14 +34,33 @@ async fn main() -> StdResult<(), Box<dyn std::error::Error>> {
     chan = chan.set_call(foo);
     chan = chan.set_subscribe(bar);
     let chan = chan.finish();
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:8080").await?;
+
     let chan2 = chan.clone();
     tokio::spawn(async move {
         let listener2 = tokio::net::TcpListener::bind("127.0.0.1:8081")
             .await
             .unwrap();
+        println!("tcp://127.0.0.1:8081 started");
         TcpRPCServer::new(chan2, listener2).run().await;
     });
+
+    let chan3 = chan.clone();
+    tokio::spawn(async move {
+        let listener3 = tokio::net::TcpListener::bind("127.0.0.1:8082")
+            .await
+            .unwrap();
+        let mut file = File::open("localhost.p12").await.unwrap();
+        let mut identity = vec![];
+        file.read_to_end(&mut identity).await.unwrap();
+        let identity = Identity::from_pkcs12(&identity, "changeit").unwrap();
+        let tls = TlsAcceptor::new(identity).unwrap();
+        println!("wss://localhost:8082 started");
+        WSRPCServer::new_tls(chan3, listener3, tls).run().await;
+    });
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:8080").await?;
+    println!("ws://localhost:8080 started");
     WSRPCServer::new(chan, listener).run().await;
+
     Ok(())
 }

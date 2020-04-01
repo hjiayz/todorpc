@@ -11,6 +11,7 @@ license = "MIT OR Apache-2.0"
 todorpc_server_tcp = { path = '../../todorpc_server_tcp/' }
 todorpc_server_websocket = { path = '../../todorpc_server_websocket/' }
 todorpc = { path = '../../todorpc' }
-tokio = {version= "0.2.13",features=["io-util","sync","stream","rt-core","macros","time"]}
+tokio = {version= "0.2.13",features=["io-util","sync","stream","rt-core","macros","time","fs"]}
 serde = {version= "1.0.105",features=["derive"]}
 define = { path = '../define' }
+native-tls = "0.2.4"

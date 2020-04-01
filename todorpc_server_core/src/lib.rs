@@ -67,6 +67,7 @@ pub async fn write_stream<W: AsyncWrite + Unpin>(n: &mut W, m: Response) -> IoRe
 
 pub async fn on_stream<S: IoStream>(iostream: S, channels: Arc<Channels>) {
     let token = Arc::new(RwLock::new(vec![]));
+    let remote_address = Arc::new(iostream.remote_address().unwrap_or_default());
     let (mut rs, mut ws) = iostream.split();
     let (tx, mut rx) = unbounded_channel();
     tokio::spawn(async move {
@@ -88,8 +89,11 @@ pub async fn on_stream<S: IoStream>(iostream: S, channels: Arc<Channels>) {
         let tx2 = tx.clone();
         let token2 = token.clone();
         let channels2 = channels.clone();
+        let remote_address2 = remote_address.clone();
         tokio::spawn(async move {
-            channels2.on_message(msg, tx2, token2).await;
+            channels2
+                .on_message(msg, tx2, token2, remote_address2)
+                .await;
         });
     }
 }
@@ -121,15 +125,19 @@ impl<T: Serialize + 'static> ContextWithSender<T> {
     pub fn msg_id(&self) -> u32 {
         self.ctx.msg_id()
     }
-    pub fn set_token(&mut self, new_token: &[u8]) -> RPCResult<()> {
+    pub fn set_token(&self, new_token: &[u8]) -> RPCResult<()> {
         self.ctx.set_token(new_token)
     }
-    pub fn get_token(&mut self) -> RPCResult<Vec<u8>> {
+    pub fn get_token(&self) -> RPCResult<Vec<u8>> {
         self.ctx.get_token()
+    }
+    pub fn remote_address(&self) -> String {
+        self.ctx.remote_address()
     }
 }
 
 pub struct Context {
+    remote_address: Arc<String>,
     msg_id: u32,
     token: Arc<RwLock<Vec<u8>>>,
 }
@@ -138,7 +146,7 @@ impl Context {
     pub fn msg_id(&self) -> u32 {
         self.msg_id
     }
-    pub fn set_token(&mut self, new_token: &[u8]) -> RPCResult<()> {
+    pub fn set_token(&self, new_token: &[u8]) -> RPCResult<()> {
         let mut token = self
             .token
             .try_write()
@@ -146,12 +154,15 @@ impl Context {
         (*token) = new_token.to_vec();
         Ok(())
     }
-    pub fn get_token(&mut self) -> RPCResult<Vec<u8>> {
+    pub fn get_token(&self) -> RPCResult<Vec<u8>> {
         let token = self
             .token
             .try_read()
             .map_err(|_| Error::TryReadTokenFaild)?;
         Ok(token.to_vec())
+    }
+    pub fn remote_address(&self) -> String {
+        self.remote_address.as_ref().to_owned()
     }
 }
 
@@ -164,6 +175,7 @@ pub struct Channels {
                     UnboundedSender<Response>,
                     u32,
                     Arc<RwLock<Vec<u8>>>,
+                    Arc<String>,
                 ) -> Pin<Box<dyn Future<Output = ()> + Send + Sync>>
                 + Send
                 + Sync,
@@ -203,9 +215,14 @@ impl Channels {
                 move |bytes: &[u8],
                       sender: UnboundedSender<Response>,
                       msg_id: u32,
-                      token: Arc<RwLock<Vec<u8>>>| {
+                      token: Arc<RwLock<Vec<u8>>>,
+                      remote_address: Arc<String>| {
                     let param = decode::<R>(bytes);
-                    let ctx = Context { msg_id, token };
+                    let ctx = Context {
+                        msg_id,
+                        token,
+                        remote_address,
+                    };
                     let ctx_with_sender = ContextWithSender::<R::Return> {
                         sender,
                         ctx,
@@ -236,9 +253,14 @@ impl Channels {
                 move |bytes: &[u8],
                       sender: UnboundedSender<Response>,
                       msg_id: u32,
-                      token: Arc<RwLock<Vec<u8>>>| {
+                      token: Arc<RwLock<Vec<u8>>>,
+                      remote_address: Arc<String>| {
                     let param = decode::<R>(bytes);
-                    let ctx = Context { msg_id, token };
+                    let ctx = Context {
+                        msg_id,
+                        token,
+                        remote_address,
+                    };
                     let result = p(param, ctx);
                     Box::pin(async move {
                         let msg = result.await;
@@ -260,9 +282,17 @@ impl Channels {
         msg: Message,
         unbounded_channel: UnboundedSender<Response>,
         token: Arc<RwLock<Vec<u8>>>,
+        remote_address: Arc<String>,
     ) {
         if let Some(f) = self.channels.get(&msg.channel_id) {
-            f(&msg.msg, unbounded_channel, msg.msg_id, token).await;
+            f(
+                &msg.msg,
+                unbounded_channel,
+                msg.msg_id,
+                token,
+                remote_address,
+            )
+            .await;
         } else {
             println!("unknown channel id {}", msg.msg_id);
         }
