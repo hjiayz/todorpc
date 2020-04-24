@@ -16,6 +16,9 @@ pub struct QuicClient {
 
 async fn send_param<S: RPC, W: AsyncWriteExt + Unpin>(param: &S, sender: &mut W) -> Result<()> {
     let ser = bincode::serialize(&param)?;
+    if ser.len() > u16::max_value() as usize {
+        return Err(Error::IoError("message length too big".to_string()));
+    }
     let len_buf = (ser.len() as u16).to_be_bytes();
     let channel_buf = S::rpc_channel().to_be_bytes();
     sender.write_all(&len_buf).await.map_err(map_io_error)?;
