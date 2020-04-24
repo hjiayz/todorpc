@@ -7,10 +7,13 @@ members = [
     'todorpc_server_tcp',
     'todorpc_client_tcp',
     'todorpc_client_core',
+    'todorpc_server_quic',
+    'todorpc_client_quic',
     'examples/wsclient',
     'examples/server',
     'examples/tcpclient',
     'examples/define',
+    'examples/quiclient',
 ]
 [profile.release]
 lto = true

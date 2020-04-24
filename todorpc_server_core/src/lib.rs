@@ -7,36 +7,41 @@ use std::marker::PhantomData;
 use std::mem::transmute;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::RwLock;
 use todorpc::{Call, Error, Message, Response, Result as RPCResult, Subscribe, RPC};
 use tokio::io::AsyncRead;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWrite;
 use tokio::io::AsyncWriteExt;
-use tokio::io::Error as IoError;
-use tokio::io::ErrorKind as IoErrorKind;
 use tokio::io::Result as IoResult;
 use tokio::stream::{Stream, StreamExt};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
+use tokio::sync::RwLock;
+
+pub trait ConnectionInfo: Sync + Send {
+    fn remote_address(&self) -> String;
+}
+
+impl ConnectionInfo for String {
+    fn remote_address(&self) -> String {
+        self.to_owned()
+    }
+}
 
 pub trait IoStream: Send + Sync + 'static {
     type ReadStream: AsyncRead + Unpin + Send + Sync;
     type WriteStream: AsyncWrite + Unpin + Send + Sync;
-    fn remote_address(&self) -> Option<String>;
+    fn connection_info(&self) -> Arc<dyn ConnectionInfo>;
     fn split(self) -> (Self::ReadStream, Self::WriteStream);
 }
 
 pub async fn read_stream<R: AsyncRead + Unpin>(n: &mut R) -> IoResult<Message> {
-    let mut h = [0u8; 16];
+    let mut h = [0u8; 10];
     n.read_exact(&mut h).await?;
-    let (len_buf, channel_id_buf, msg_id_buf): ([u8; 8], [u8; 4], [u8; 4]) =
+    let (len_buf, channel_id_buf, msg_id_buf): ([u8; 2], [u8; 4], [u8; 4]) =
         unsafe { transmute(h) };
-    let len = u64::from_be_bytes(len_buf) as usize;
+    let len = u16::from_be_bytes(len_buf) as usize;
     let channel_id = u32::from_be_bytes(channel_id_buf);
     let msg_id = u32::from_be_bytes(msg_id_buf);
-    if len > (1 << 14) {
-        return Err(IoError::new(IoErrorKind::Other, "msg length invalid"));
-    }
     let mut msg_bytes = Vec::with_capacity(len);
     unsafe {
         msg_bytes.set_len(len);
@@ -67,7 +72,7 @@ pub async fn write_stream<W: AsyncWrite + Unpin>(n: &mut W, m: Response) -> IoRe
 
 pub async fn on_stream<S: IoStream>(iostream: S, channels: Arc<Channels>) {
     let token = Arc::new(RwLock::new(vec![]));
-    let remote_address = Arc::new(iostream.remote_address().unwrap_or_default());
+    let connection_info = iostream.connection_info();
     let (mut rs, mut ws) = iostream.split();
     let (tx, mut rx) = unbounded_channel();
     tokio::spawn(async move {
@@ -89,10 +94,10 @@ pub async fn on_stream<S: IoStream>(iostream: S, channels: Arc<Channels>) {
         let tx2 = tx.clone();
         let token2 = token.clone();
         let channels2 = channels.clone();
-        let remote_address2 = remote_address.clone();
+        let connection_info2 = connection_info.clone();
         tokio::spawn(async move {
             channels2
-                .on_message(msg, tx2, token2, remote_address2)
+                .on_message(msg, tx2, token2, connection_info2)
                 .await;
         });
     }
@@ -120,67 +125,54 @@ fn send<T: Serialize + 'static>(
 
 impl<T: Serialize + 'static> ContextWithSender<T> {
     pub fn send(&self, msg: &T) -> RPCResult<()> {
-        send(&self.sender, self.ctx.msg_id(), msg)
+        send(&self.sender, self.ctx.msg_id, msg)
     }
-    pub fn msg_id(&self) -> u32 {
-        self.ctx.msg_id()
+    pub async fn set_token(&self, new_token: &[u8]) {
+        self.ctx.set_token(new_token).await
     }
-    pub fn set_token(&self, new_token: &[u8]) -> RPCResult<()> {
-        self.ctx.set_token(new_token)
+    pub async fn get_token(&self) -> Vec<u8> {
+        self.ctx.get_token().await
     }
-    pub fn get_token(&self) -> RPCResult<Vec<u8>> {
-        self.ctx.get_token()
-    }
-    pub fn remote_address(&self) -> String {
-        self.ctx.remote_address()
+    pub fn connection_info(&self) -> Arc<dyn ConnectionInfo> {
+        self.ctx.connection_info().clone()
     }
 }
 
 pub struct Context {
-    remote_address: Arc<String>,
+    connection_info: Arc<dyn ConnectionInfo>,
     msg_id: u32,
     token: Arc<RwLock<Vec<u8>>>,
 }
 
 impl Context {
-    pub fn msg_id(&self) -> u32 {
-        self.msg_id
+    pub async fn set_token(&self, new_token: &[u8]) {
+        let mut token = self.token.write().await;
+        *token = new_token.to_vec();
     }
-    pub fn set_token(&self, new_token: &[u8]) -> RPCResult<()> {
-        let mut token = self
-            .token
-            .try_write()
-            .map_err(|_| Error::TrySetTokenFaild)?;
-        (*token) = new_token.to_vec();
-        Ok(())
+    pub async fn get_token(&self) -> Vec<u8> {
+        let token = self.token.read().await;
+        token.to_vec()
     }
-    pub fn get_token(&self) -> RPCResult<Vec<u8>> {
-        let token = self
-            .token
-            .try_read()
-            .map_err(|_| Error::TryReadTokenFaild)?;
-        Ok(token.to_vec())
-    }
-    pub fn remote_address(&self) -> String {
-        self.remote_address.as_ref().to_owned()
+    pub fn connection_info(&self) -> Arc<dyn ConnectionInfo> {
+        self.connection_info.clone()
     }
 }
 
+type OnChannelMsg = Box<
+    dyn Fn(
+            &[u8],
+            UnboundedSender<Response>,
+            u32,
+            Arc<RwLock<Vec<u8>>>,
+            Arc<dyn ConnectionInfo>,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + Sync>>
+        + Send
+        + Sync,
+>;
+
+#[derive(Default)]
 pub struct Channels {
-    channels: BTreeMap<
-        u32,
-        Box<
-            dyn Fn(
-                    &[u8],
-                    UnboundedSender<Response>,
-                    u32,
-                    Arc<RwLock<Vec<u8>>>,
-                    Arc<String>,
-                ) -> Pin<Box<dyn Future<Output = ()> + Send + Sync>>
-                + Send
-                + Sync,
-        >,
-    >,
+    channels: BTreeMap<u32, OnChannelMsg>,
 }
 
 fn decode<R: RPC>(bytes: &[u8]) -> RPCResult<R> {
@@ -195,9 +187,7 @@ fn decode<R: RPC>(bytes: &[u8]) -> RPCResult<R> {
 
 impl Channels {
     pub fn new() -> Channels {
-        Channels {
-            channels: BTreeMap::new(),
-        }
+        Self::default()
     }
     pub fn set_subscribe<R, F, P>(mut self, p: P) -> Self
     where
@@ -216,12 +206,12 @@ impl Channels {
                       sender: UnboundedSender<Response>,
                       msg_id: u32,
                       token: Arc<RwLock<Vec<u8>>>,
-                      remote_address: Arc<String>| {
+                      connection_info: Arc<dyn ConnectionInfo>| {
                     let param = decode::<R>(bytes);
                     let ctx = Context {
                         msg_id,
                         token,
-                        remote_address,
+                        connection_info,
                     };
                     let ctx_with_sender = ContextWithSender::<R::Return> {
                         sender,
@@ -254,12 +244,12 @@ impl Channels {
                       sender: UnboundedSender<Response>,
                       msg_id: u32,
                       token: Arc<RwLock<Vec<u8>>>,
-                      remote_address: Arc<String>| {
+                      connection_info: Arc<dyn ConnectionInfo>| {
                     let param = decode::<R>(bytes);
                     let ctx = Context {
                         msg_id,
                         token,
-                        remote_address,
+                        connection_info,
                     };
                     let result = p(param, ctx);
                     Box::pin(async move {
@@ -282,7 +272,7 @@ impl Channels {
         msg: Message,
         unbounded_channel: UnboundedSender<Response>,
         token: Arc<RwLock<Vec<u8>>>,
-        remote_address: Arc<String>,
+        connection_info: Arc<dyn ConnectionInfo>,
     ) {
         if let Some(f) = self.channels.get(&msg.channel_id) {
             f(
@@ -290,7 +280,7 @@ impl Channels {
                 unbounded_channel,
                 msg.msg_id,
                 token,
-                remote_address,
+                connection_info,
             )
             .await;
         } else {

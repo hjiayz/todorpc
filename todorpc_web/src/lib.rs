@@ -12,10 +12,12 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::{console, BinaryType, CloseEvent, ErrorEvent, EventTarget, MessageEvent, WebSocket};
 
+type OnMessage = Box<dyn Fn(RPCResult<Vec<u8>>) -> bool>;
+
 struct Inner {
     next_id: u32,
     ws: WebSocket,
-    on_msgs: BTreeMap<u32, Box<dyn Fn(RPCResult<Vec<u8>>) -> bool>>,
+    on_msgs: BTreeMap<u32, OnMessage>,
     onmessage_callback: Option<Closure<dyn FnMut(MessageEvent)>>,
     onerror_callback: Option<Closure<dyn FnMut(ErrorEvent)>>,
     onclose_callback: Option<Closure<dyn FnMut(CloseEvent)>>,

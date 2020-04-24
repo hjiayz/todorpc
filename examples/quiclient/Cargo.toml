@@ -1,16 +1,16 @@
 [package]
-name = "tcpclient"
+name = "quiclient"
 version = "0.1.0"
-authors = ["hjiayz <hjiayz@gmail.com>"]
+authors = ["hjiayz <hjiayz@163.com>"]
 edition = "2018"
-license = "MIT OR Apache-2.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-todorpc_client_tcp = { path = './../../todorpc_client_tcp' }
+todorpc_client_quic = { path = './../../todorpc_client_quic' }
 todorpc = { path = './../../todorpc' }
 serde = {version= "1.0.106",features=["derive"]}
 lazy_static = "1.4.0"
 define = { path = "../define"}
-tokio = {version= "0.2.18",features=["io-util","sync","stream","rt-core","macros","time"]}
+tokio = {version= "0.2.18",features=["fs","io-util","sync","stream","rt-core","macros","time"]}
+quinn = "0.6.1"

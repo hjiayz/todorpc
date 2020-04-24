@@ -23,9 +23,16 @@ fn send_msg<S: Fn(RPCResult<Vec<u8>>) -> bool + 'static, C: Connect<S>>(
 ) {
     let msg_id_buf = msg_id.to_be_bytes();
     let len = msg.len();
-    let len_buf = (len as u64).to_be_bytes();
+    if len > u16::max_value() as usize {
+        conn.close_msg_handle(msg_id, |f| {
+            if let Some(on_result) = f {
+                on_result(Err(RPCError::IoError("message length too big".to_string())));
+            }
+        })
+    }
+    let len_buf = (len as u16).to_be_bytes();
     let channel_id_buf = channel_id.to_be_bytes();
-    let h: [u8; 16] = unsafe { transmute((len_buf, channel_id_buf, msg_id_buf)) };
+    let h: [u8; 10] = unsafe { transmute((len_buf, channel_id_buf, msg_id_buf)) };
     let mut buf = Vec::with_capacity(len + 16);
     if buf.write_all(&h).is_err() {
         conn.close_msg_handle(msg_id, |f| {

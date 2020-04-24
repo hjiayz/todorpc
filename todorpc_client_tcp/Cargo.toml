@@ -15,7 +15,7 @@ path = '../todorpc'
 path = '../todorpc_client_core'
 
 [dependencies.tokio]
-version = '0.2.13'
+version = '0.2.18'
 features = [
     'io-util',
     'sync',

@@ -6,7 +6,7 @@ use std::cmp;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{self, Poll};
-pub use todorpc_server_core::{Channels, Context, ContextWithSender};
+pub use todorpc_server_core::{Channels, ConnectionInfo, Context, ContextWithSender};
 use todorpc_server_core::{IoStream, Server};
 use tokio::io::{
     AsyncRead, AsyncWrite, Error as IoError, ErrorKind as IoErrorKind, Result as TIoResult,
@@ -98,12 +98,14 @@ impl<S: AsyncWrite + AsyncRead + Sync + Send + Unpin + 'static> AsyncWrite for W
 impl IoStream for WsStream<TcpStream> {
     type ReadStream = WsRead<TcpStream>;
     type WriteStream = WsWrite<TcpStream>;
-    fn remote_address(&self) -> Option<String> {
-        self.0
-            .get_ref()
-            .peer_addr()
-            .map(|addr| format!("{}", addr))
-            .ok()
+    fn connection_info(&self) -> Arc<dyn ConnectionInfo> {
+        Arc::new(
+            self.0
+                .get_ref()
+                .peer_addr()
+                .map(|addr| format!("{}", addr))
+                .unwrap_or_default(),
+        )
     }
     fn split(self) -> (Self::ReadStream, Self::WriteStream) {
         let (sink, stream) = self.0.split();
@@ -120,13 +122,15 @@ impl IoStream for WsStream<TcpStream> {
 impl IoStream for WsStream<ATlsStream<TcpStream>> {
     type ReadStream = WsRead<ATlsStream<TcpStream>>;
     type WriteStream = WsWrite<ATlsStream<TcpStream>>;
-    fn remote_address(&self) -> Option<String> {
-        self.0
-            .get_ref()
-            .get_ref()
-            .peer_addr()
-            .map(|addr| format!("{}", addr))
-            .ok()
+    fn connection_info(&self) -> Arc<dyn ConnectionInfo> {
+        Arc::new(
+            self.0
+                .get_ref()
+                .get_ref()
+                .peer_addr()
+                .map(|addr| format!("{}", addr))
+                .unwrap_or_default(),
+        )
     }
     fn split(self) -> (Self::ReadStream, Self::WriteStream) {
         let (sink, stream) = self.0.split();

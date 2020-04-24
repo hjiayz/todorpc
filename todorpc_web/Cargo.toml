@@ -6,12 +6,12 @@ edition = '2018'
 license = 'MIT OR Apache-2.0'
 
 [dependencies]
-js-sys = '0.3.36'
+js-sys = '0.3.37'
 futures = '0.3.4'
-wasm-bindgen-futures = '0.4.9'
+wasm-bindgen-futures = '0.4.10'
 
 [dependencies.wasm-bindgen]
-version = '0.2.59'
+version = '0.2.60'
 features = ['serde-serialize']
 
 [dependencies.todorpc]

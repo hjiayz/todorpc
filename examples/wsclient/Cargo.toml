@@ -13,7 +13,7 @@ crate-type = ["cdylib"]
 [dependencies]
 todorpc_web = { path = './../../todorpc_web' }
 todorpc = { path = './../../todorpc' }
-serde = { version= "1.0.105", features=["derive"]}
+serde = { version= "1.0.106", features=["derive"]}
 wasm-bindgen = "0.2.60"
 web-sys = "0.3.36"
 console_error_panic_hook = "0.1.6"

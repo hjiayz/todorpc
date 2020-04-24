@@ -13,7 +13,7 @@ tokio-tls = "0.3.0"
 native-tls = "0.2.4"
 
 [dependencies.todorpc_server_core]
-path = '..\todorpc_server_core\'
+path = '../todorpc_server_core/'
 
 [dependencies.tokio]
 version = '0.2.13'

@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use todorpc::*;
 pub use todorpc_client_core::{async_scall as async_call, scall as call, ssubscribe as subscribe};
 use todorpc_client_core::{Connect, ConnectSend};
@@ -9,7 +9,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, Error as IoError};
 use tokio::net::TcpStream;
 use tokio::stream::StreamExt;
 use tokio::sync::mpsc;
-use tokio::time::{delay_for, Duration};
+use tokio::sync::Mutex;
 
 fn map_io_err(src: IoError) -> Error {
     Error::IoError(format!("{:?}", src))
@@ -72,13 +72,7 @@ impl TcpClient {
                     break;
                 }
             }
-
-            let lock = loop {
-                if let Ok(lock) = inner2.on_msgs.try_lock() {
-                    break lock;
-                }
-                delay_for(Duration::from_millis(0)).await;
-            };
+            let lock = inner2.on_msgs.lock().await;
 
             for f in lock.values() {
                 f(Err(Error::ChannelClosed));
@@ -100,12 +94,7 @@ impl TcpClient {
                     Ok(msg) => msg,
                 };
 
-                let mut lock = loop {
-                    if let Ok(lock) = inner3.on_msgs.try_lock() {
-                        break lock;
-                    }
-                    delay_for(Duration::from_millis(0)).await;
-                };
+                let mut lock = inner3.on_msgs.lock().await;
 
                 let f = match lock.get_mut(&msg.msg_id) {
                     None => {
@@ -119,12 +108,7 @@ impl TcpClient {
                 }
             }
             inner3.is_connected.store(false, Ordering::SeqCst);
-            let mut lock = loop {
-                if let Ok(lock) = inner3.sender.try_lock() {
-                    break lock;
-                }
-                delay_for(Duration::from_millis(0)).await;
-            };
+            let mut lock = inner3.sender.lock().await;
             lock.take();
         });
         client
@@ -139,16 +123,11 @@ impl Connect<Box<dyn Fn(Result<Vec<u8>>) -> bool + 'static + Send>> for TcpClien
         let client: TcpClient = self.to_owned();
         let bytes: Vec<u8> = bytes.to_owned();
         tokio::task::spawn(async move {
-            let lock = loop {
-                if let Ok(lock) = client.inner.sender.try_lock() {
-                    break lock;
-                }
-                delay_for(Duration::from_millis(0)).await;
-            };
+            let lock = client.inner.sender.lock().await;
             if lock.is_none() {
                 return cb(&client, Err(Error::ChannelClosed));
             }
-            if let Err(_) = lock.as_ref().unwrap().send(bytes) {
+            if lock.as_ref().unwrap().send(bytes).is_err() {
                 cb(&client, Err(Error::ChannelClosed));
             };
         });
@@ -160,12 +139,7 @@ impl Connect<Box<dyn Fn(Result<Vec<u8>>) -> bool + 'static + Send>> for TcpClien
     ) {
         let client = self.clone();
         tokio::task::spawn(async move {
-            let mut lock = loop {
-                if let Ok(lock) = client.inner.on_msgs.try_lock() {
-                    break lock;
-                }
-                delay_for(Duration::from_millis(0)).await;
-            };
+            let mut lock = client.inner.on_msgs.lock().await;
             let next_id = client.inner.next_id.fetch_add(1, Ordering::SeqCst);
             if next_id == u32::max_value() {
                 client.inner.is_connected.store(false, Ordering::SeqCst);
@@ -184,12 +158,7 @@ impl Connect<Box<dyn Fn(Result<Vec<u8>>) -> bool + 'static + Send>> for TcpClien
     ) {
         let client = self.clone();
         tokio::task::spawn(async move {
-            let mut lock = loop {
-                if let Ok(lock) = client.inner.on_msgs.try_lock() {
-                    break lock;
-                }
-                delay_for(Duration::from_millis(0)).await;
-            };
+            let mut lock = client.inner.on_msgs.lock().await;
             let f = lock.remove(&msg_id);
             drop(lock);
             cb(f);

@@ -1,6 +1,7 @@
 use define::*;
 use native_tls::{Identity, TlsAcceptor};
 use std::result::Result as StdResult;
+use std::sync::Arc;
 use todorpc::*;
 use todorpc_server_tcp::TcpRPCServer;
 use todorpc_server_websocket::*;
@@ -28,8 +29,41 @@ async fn bar(res: Result<Bar>, ctx: ContextWithSender<(String, u32)>) {
     }
 }
 
+async fn listen_quic(chan: Arc<Channels>, identity: &[u8]) {
+    use quinn::{Certificate, CertificateChain, Endpoint, PrivateKey, ServerConfigBuilder};
+    use std::net::SocketAddr;
+    use std::str::FromStr;
+    use todorpc_server_quic::QuicRPCServer;
+    let mut server_config = ServerConfigBuilder::default();
+    let pfx = p12::PFX::parse(identity).unwrap();
+    let mut x509s = pfx.cert_x509_bags("changeit").unwrap();
+    x509s.pop();
+    let cert = x509s.pop().unwrap();
+    let key = pfx.key_bags("changeit").unwrap().pop().unwrap();
+    let cert_chain = CertificateChain::from_certs(Certificate::from_der(&cert));
+    let key = PrivateKey::from_der(&key).unwrap();
+    server_config.certificate(cert_chain, key).unwrap();
+    let mut endpoint = Endpoint::builder();
+    endpoint.listen(server_config.build());
+
+    let incoming = {
+        let (endpoint, incoming) = endpoint
+            .bind(&SocketAddr::from_str("127.0.0.1:8084").unwrap())
+            .unwrap();
+        println!("quic listening on {}", endpoint.local_addr().unwrap());
+        incoming
+    };
+    QuicRPCServer::new(chan, incoming).run().await
+}
+
 #[tokio::main]
 async fn main() -> StdResult<(), Box<dyn std::error::Error>> {
+    let mut file = File::open("localhost.p12").await.unwrap();
+    let mut identity = vec![];
+    file.read_to_end(&mut identity).await.unwrap();
+
+    let identity2 = identity.clone();
+
     let mut chan = Channels::new();
     chan = chan.set_call(foo);
     chan = chan.set_subscribe(bar);
@@ -49,14 +83,14 @@ async fn main() -> StdResult<(), Box<dyn std::error::Error>> {
         let listener3 = tokio::net::TcpListener::bind("127.0.0.1:8082")
             .await
             .unwrap();
-        let mut file = File::open("localhost.p12").await.unwrap();
-        let mut identity = vec![];
-        file.read_to_end(&mut identity).await.unwrap();
         let identity = Identity::from_pkcs12(&identity, "changeit").unwrap();
         let tls = TlsAcceptor::new(identity).unwrap();
         println!("wss://localhost:8082 started");
         WSRPCServer::new_tls(chan3, listener3, tls).run().await;
     });
+
+    let chan4 = chan.clone();
+    tokio::spawn(async move { listen_quic(chan4, &identity2).await });
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:8080").await?;
     println!("ws://localhost:8080 started");

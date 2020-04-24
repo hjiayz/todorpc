@@ -1,0 +1,28 @@
+[package]
+name = "todorpc_client_quic"
+version = "0.1.0"
+authors = ["hjiayz <hjiayz@163.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+quinn = "0.6.1"
+futures = "0.3.4"
+todorpc_client_core = { path = "../todorpc_client_core" }
+anyhow = "1.0.28"
+todorpc = { path = "../todorpc" }
+serde = '1.0.106'
+bincode = '1.2.1'
+
+[dependencies.tokio]
+version = '0.2.18'
+features = [
+    'io-util',
+    'sync',
+    'stream',
+    'rt-core',
+    'dns',
+    'tcp',
+    'time',
+]
