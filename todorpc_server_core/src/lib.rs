@@ -1,4 +1,5 @@
 use bincode::{deserialize, serialize};
+use log::error;
 use serde::Serialize;
 use std::any::TypeId;
 use std::collections::BTreeMap;
@@ -79,7 +80,7 @@ pub async fn on_stream<S: IoStream>(iostream: S, channels: Arc<Channels>) {
         while let Some(msg) = rx.recv().await {
             let result = write_stream(&mut ws, msg).await;
             if let Err(e) = result {
-                println!("{}", e);
+                error!("{}", e);
                 break;
             }
         }
@@ -87,7 +88,7 @@ pub async fn on_stream<S: IoStream>(iostream: S, channels: Arc<Channels>) {
     loop {
         let result = read_stream(&mut rs).await;
         if let Err(e) = result {
-            println!("{}", e);
+            error!("{}", e);
             break;
         }
         let msg = result.unwrap();
@@ -162,9 +163,7 @@ type OnChannelMsg = Box<
     dyn Fn(
             &[u8],
             UnboundedSender<Response>,
-            u32,
-            Arc<RwLock<Vec<u8>>>,
-            Arc<dyn ConnectionInfo>,
+            Context,
         ) -> Pin<Box<dyn Future<Output = ()> + Send + Sync>>
         + Send
         + Sync,
@@ -202,17 +201,8 @@ impl Channels {
         self.channels.insert(
             rpc_channel,
             Box::new(
-                move |bytes: &[u8],
-                      sender: UnboundedSender<Response>,
-                      msg_id: u32,
-                      token: Arc<RwLock<Vec<u8>>>,
-                      connection_info: Arc<dyn ConnectionInfo>| {
+                move |bytes: &[u8], sender: UnboundedSender<Response>, ctx: Context| {
                     let param = decode::<R>(bytes);
-                    let ctx = Context {
-                        msg_id,
-                        token,
-                        connection_info,
-                    };
                     let ctx_with_sender = ContextWithSender::<R::Return> {
                         sender,
                         ctx,
@@ -240,22 +230,14 @@ impl Channels {
         self.channels.insert(
             rpc_channel,
             Box::new(
-                move |bytes: &[u8],
-                      sender: UnboundedSender<Response>,
-                      msg_id: u32,
-                      token: Arc<RwLock<Vec<u8>>>,
-                      connection_info: Arc<dyn ConnectionInfo>| {
+                move |bytes: &[u8], sender: UnboundedSender<Response>, ctx: Context| {
+                    let msg_id = ctx.msg_id;
                     let param = decode::<R>(bytes);
-                    let ctx = Context {
-                        msg_id,
-                        token,
-                        connection_info,
-                    };
                     let result = p(param, ctx);
                     Box::pin(async move {
                         let msg = result.await;
                         if let Err(e) = send(&sender, msg_id, &msg) {
-                            println!("{:?}", e);
+                            error!("{:?}", e);
                         }
                     })
                 },
@@ -274,17 +256,15 @@ impl Channels {
         token: Arc<RwLock<Vec<u8>>>,
         connection_info: Arc<dyn ConnectionInfo>,
     ) {
+        let ctx = Context {
+            connection_info,
+            msg_id: msg.msg_id,
+            token,
+        };
         if let Some(f) = self.channels.get(&msg.channel_id) {
-            f(
-                &msg.msg,
-                unbounded_channel,
-                msg.msg_id,
-                token,
-                connection_info,
-            )
-            .await;
+            f(&msg.msg, unbounded_channel, ctx).await;
         } else {
-            println!("unknown channel id {}", msg.msg_id);
+            error!("unknown channel id {}", msg.msg_id);
         }
     }
 }

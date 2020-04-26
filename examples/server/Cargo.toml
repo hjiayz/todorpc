@@ -18,3 +18,5 @@ native-tls = "0.2.4"
 quinn = "0.6.1"
 todorpc_server_quic = { path = "../../todorpc_server_quic" }
 p12 = "0.1.4"
+log = "0.4.8"
+pretty_env_logger = "0.4.0"

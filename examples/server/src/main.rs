@@ -1,5 +1,7 @@
 use define::*;
+use log::{error, info};
 use native_tls::{Identity, TlsAcceptor};
+use pretty_env_logger::formatted_builder;
 use std::result::Result as StdResult;
 use std::sync::Arc;
 use todorpc::*;
@@ -11,7 +13,7 @@ use tokio::io::AsyncReadExt;
 async fn foo(res: Result<Foo>, _ctx: Context) -> u32 {
     match res {
         Err(_) => 0,
-        Ok(val) => val.0 % 20,
+        Ok(val) => val.0,
     }
 }
 
@@ -23,7 +25,7 @@ async fn bar(res: Result<Bar>, ctx: ContextWithSender<(String, u32)>) {
         delay_for(Duration::from_millis(1000)).await;
         i += 1;
         if let Err(e) = ctx.send(&(i.to_string(), i)) {
-            println!("send faild: {:?}", e);
+            error!("send failed: {:?}", e);
             break;
         };
     }
@@ -50,7 +52,7 @@ async fn listen_quic(chan: Arc<Channels>, identity: &[u8]) {
         let (endpoint, incoming) = endpoint
             .bind(&SocketAddr::from_str("127.0.0.1:8084").unwrap())
             .unwrap();
-        println!("quic listening on {}", endpoint.local_addr().unwrap());
+        info!("quic://{} started", endpoint.local_addr().unwrap());
         incoming
     };
     QuicRPCServer::new(chan, incoming).run().await
@@ -58,6 +60,9 @@ async fn listen_quic(chan: Arc<Channels>, identity: &[u8]) {
 
 #[tokio::main]
 async fn main() -> StdResult<(), Box<dyn std::error::Error>> {
+    formatted_builder()
+        .filter_level(log::LevelFilter::Trace)
+        .init();
     let mut file = File::open("localhost.p12").await.unwrap();
     let mut identity = vec![];
     file.read_to_end(&mut identity).await.unwrap();
@@ -74,7 +79,7 @@ async fn main() -> StdResult<(), Box<dyn std::error::Error>> {
         let listener2 = tokio::net::TcpListener::bind("127.0.0.1:8081")
             .await
             .unwrap();
-        println!("tcp://127.0.0.1:8081 started");
+        info!("tcp://127.0.0.1:8081 started");
         TcpRPCServer::new(chan2, listener2).run().await;
     });
 
@@ -85,7 +90,7 @@ async fn main() -> StdResult<(), Box<dyn std::error::Error>> {
             .unwrap();
         let identity = Identity::from_pkcs12(&identity, "changeit").unwrap();
         let tls = TlsAcceptor::new(identity).unwrap();
-        println!("wss://localhost:8082 started");
+        info!("wss://localhost:8082 started");
         WSRPCServer::new_tls(chan3, listener3, tls).run().await;
     });
 
@@ -93,7 +98,7 @@ async fn main() -> StdResult<(), Box<dyn std::error::Error>> {
     tokio::spawn(async move { listen_quic(chan4, &identity2).await });
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:8080").await?;
-    println!("ws://localhost:8080 started");
+    info!("ws://localhost:8080 started");
     WSRPCServer::new(chan, listener).run().await;
 
     Ok(())

@@ -1,6 +1,7 @@
 use futures::ready;
 use futures::sink::Sink;
 use futures::stream::{SplitSink, SplitStream, Stream, StreamExt};
+use log::error;
 use native_tls::TlsAcceptor;
 use std::cmp;
 use std::pin::Pin;
@@ -147,13 +148,13 @@ impl IoStream for WsStream<ATlsStream<TcpStream>> {
 async fn map_tcpstream(rts: TIoResult<TcpStream>) -> Option<WsStream<TcpStream>> {
     use tokio_tungstenite::accept_async;
     if let Err(e) = rts {
-        println!("{}", e);
+        error!("{}", e);
         return None;
     }
     let ts = rts.unwrap();
     let rws = accept_async(ts).await;
     if let Err(e) = rws {
-        println!("{}", e);
+        error!("{}", e);
         return None;
     }
     let ws = rws.unwrap();
@@ -166,7 +167,7 @@ async fn map_tlstream(
     use tokio_tungstenite::accept_async;
     let rws = accept_async(rtls?).await;
     if let Err(e) = rws {
-        println!("{}", e);
+        error!("{}", e);
         return None;
     }
     let ws = rws.unwrap();

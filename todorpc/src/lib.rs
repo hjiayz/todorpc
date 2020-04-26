@@ -10,9 +10,8 @@ pub enum Error {
     ChannelClosed,
     IoError(String),
     VerifyFailed,
-    TrySetTokenFaild,
-    TryReadTokenFaild,
     NoConnected,
+    UnknownChannelID(u32),
     Other(String),
 }
 

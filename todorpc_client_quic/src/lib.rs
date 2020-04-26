@@ -76,6 +76,9 @@ impl QuicClient {
         Ok(rx)
     }
     async fn req<R: RPC>(&self, param: &R) -> Result<RecvStream> {
+        if !param.verify() {
+            return Err(Error::VerifyFailed);
+        }
         let (mut send, recv) = self.conn.open_bi().await.map_err(map_io_error)?;
 
         send_param(param, &mut send).await?;

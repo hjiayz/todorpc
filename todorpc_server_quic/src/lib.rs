@@ -1,15 +1,15 @@
+use anyhow::Result;
 use futures::stream::StreamExt;
 use futures::TryFutureExt;
+use log::error;
 use quinn::Connecting;
+use quinn::Connection;
 use quinn::Incoming;
+use quinn::SendStream;
+use std::mem::transmute;
 use std::sync::Arc;
 use todorpc::{Message, Response};
 pub use todorpc_server_core::{Channels, ConnectionInfo, Context, ContextWithSender};
-//use todorpc_server_core::{IoStream, Server};
-use anyhow::Result;
-use quinn::Connection;
-use quinn::SendStream;
-use std::mem::transmute;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio::sync::RwLock;
@@ -35,7 +35,7 @@ impl QuicRPCServer {
         while let Some(connecting) = self.incoming.next().await {
             tokio::spawn(
                 handle_connection(connecting, self.channels.clone()).unwrap_or_else(move |e| {
-                    println!("connection failed: {reason}", reason = e.to_string())
+                    error!("connection failed: {reason}", reason = e.to_string())
                 }),
             );
         }
@@ -51,8 +51,8 @@ async fn handle_connection(conn: Connecting, channels: Arc<Channels>) -> Result<
     let token = Arc::new(RwLock::new(vec![]));
     while let Some(stream) = bi_streams.next().await {
         let stream = match stream {
-            Err(quinn::ConnectionError::ApplicationClosed { .. }) => {
-                println!("connection closed");
+            Err(quinn::ConnectionError::ApplicationClosed(info)) => {
+                error!("connection closed: {reason}", reason = info.to_string());
                 return Ok(());
             }
             Err(e) => {
@@ -62,7 +62,7 @@ async fn handle_connection(conn: Connecting, channels: Arc<Channels>) -> Result<
         };
         tokio::spawn(
             handle_request(stream, channels.clone(), connection.clone(), token.clone())
-                .unwrap_or_else(move |e| println!("failed: {reason}", reason = e.to_string())),
+                .unwrap_or_else(move |e| error!("failed: {reason}", reason = e.to_string())),
         );
     }
     Ok(())
@@ -94,7 +94,7 @@ async fn handle_request(
         while let Some(msg) = rx.recv().await {
             let result = write_stream(&mut send, msg).await;
             if let Err(e) = result {
-                println!("{}", e);
+                error!("{}", e);
                 break;
             }
         }

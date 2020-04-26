@@ -1,4 +1,5 @@
 use futures::stream::{Stream, StreamExt};
+use log::error;
 use std::pin::Pin;
 use std::sync::Arc;
 pub use todorpc_server_core::{Channels, ConnectionInfo, Context, ContextWithSender};
@@ -27,7 +28,7 @@ impl IoStream for TcpStream {
 
 async fn map_tcpstream(rts: TIoResult<TokioTcpStream>) -> Option<TcpStream> {
     if let Err(e) = rts {
-        println!("{}", e);
+        error!("{}", e);
         return None;
     }
     Some(TcpStream(rts.unwrap()))

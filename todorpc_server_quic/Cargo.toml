@@ -13,3 +13,4 @@ todorpc_server_core = { path = "../todorpc_server_core" }
 tokio = "0.2.18"
 anyhow = "1.0.28"
 todorpc = { path = "../todorpc" }
+log = "0.4.8"
