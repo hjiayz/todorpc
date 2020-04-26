@@ -36,7 +36,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     let mut i = 0;
     loop {
-        //delay_for(Duration::from_millis(1000)).await;
+        delay_for(Duration::from_millis(1000)).await;
         match client2.call(&Foo(i)).await {
             Ok(val) => println!("foo: {}", val),
             Err(e) => {

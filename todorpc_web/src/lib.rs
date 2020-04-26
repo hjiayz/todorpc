@@ -57,7 +57,7 @@ impl WSRpc {
             let inner3 = inner2.clone();
             let response = e.data();
             let mut bytes = Cursor::new(Uint8Array::new(&response).to_vec());
-            let msg = match read_msg(&mut bytes) {
+            let (msg, msg_id) = match read_msg(&mut bytes) {
                 Ok(msg) => msg,
                 Err(e) => {
                     console::log_1(&JsValue::from(&format!("{:?}", e)));
@@ -65,7 +65,6 @@ impl WSRpc {
                     return;
                 }
             };
-            let msg_id = msg.msg_id;
             let sinner3 = inner3.upgrade().unwrap();
             let borrowed = sinner3.borrow();
             let f = borrowed.on_msgs.get(&msg_id).unwrap();

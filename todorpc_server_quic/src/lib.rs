@@ -84,11 +84,7 @@ async fn handle_request(
     }
     let channel_id = u32::from_be_bytes(channel_id_buf);
     recv.read_exact(&mut msg).await?;
-    let msg = Message {
-        channel_id,
-        msg_id: 0,
-        msg,
-    };
+    let msg = Message { channel_id, msg };
     let (tx, mut rx) = unbounded_channel();
     tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {

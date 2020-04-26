@@ -15,7 +15,7 @@ fn map_io_err(src: IoError) -> Error {
     Error::IoError(format!("{:?}", src))
 }
 
-async fn read_msg_async<R: AsyncRead + Unpin>(n: &mut R) -> Result<Response> {
+async fn read_msg_async<R: AsyncRead + Unpin>(n: &mut R) -> Result<(Response, u32)> {
     use std::mem::transmute;
     let mut h = [0u8; 12];
     n.read_exact(&mut h).await.map_err(map_io_err)?;
@@ -29,7 +29,7 @@ async fn read_msg_async<R: AsyncRead + Unpin>(n: &mut R) -> Result<Response> {
     };
     n.read_exact(&mut msg_bytes).await.map_err(map_io_err)?;
     let msg = msg_bytes;
-    Ok(Response { msg_id, msg })
+    Ok((Response { msg }, msg_id))
 }
 
 struct Inner {
@@ -86,7 +86,7 @@ impl TcpClient {
                 if !inner3.is_connected.load(Ordering::SeqCst) {
                     break;
                 }
-                let msg = match read_msg_async(&mut read).await {
+                let (msg, msg_id) = match read_msg_async(&mut read).await {
                     Err(e) => {
                         println!("{:?}", e);
                         break;
@@ -96,15 +96,15 @@ impl TcpClient {
 
                 let mut lock = inner3.on_msgs.lock().await;
 
-                let f = match lock.get_mut(&msg.msg_id) {
+                let f = match lock.get_mut(&msg_id) {
                     None => {
-                        println!("msg_id {:?} miss", msg.msg_id);
+                        println!("msg_id {:?} miss", msg_id);
                         break;
                     }
                     Some(f) => f,
                 };
                 if f(Ok(msg.msg)) {
-                    lock.remove(&msg.msg_id);
+                    lock.remove(&msg_id);
                 }
             }
             inner3.is_connected.store(false, Ordering::SeqCst);

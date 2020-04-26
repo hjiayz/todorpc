@@ -35,7 +35,7 @@ pub trait IoStream: Send + Sync + 'static {
     fn split(self) -> (Self::ReadStream, Self::WriteStream);
 }
 
-pub async fn read_stream<R: AsyncRead + Unpin>(n: &mut R) -> IoResult<Message> {
+pub async fn read_stream<R: AsyncRead + Unpin>(n: &mut R) -> IoResult<(Message, u32)> {
     let mut h = [0u8; 10];
     n.read_exact(&mut h).await?;
     let (len_buf, channel_id_buf, msg_id_buf): ([u8; 2], [u8; 4], [u8; 4]) =
@@ -49,19 +49,19 @@ pub async fn read_stream<R: AsyncRead + Unpin>(n: &mut R) -> IoResult<Message> {
     };
     n.read_exact(&mut msg_bytes).await?;
     let msg = msg_bytes;
-    let msg = Message {
-        channel_id,
-        msg_id,
-        msg,
-    };
-    Ok(msg)
+    let msg = Message { channel_id, msg };
+    Ok((msg, msg_id))
 }
 
-pub async fn write_stream<W: AsyncWrite + Unpin>(n: &mut W, m: Response) -> IoResult<()> {
+pub async fn write_stream<W: AsyncWrite + Unpin>(
+    n: &mut W,
+    m: Response,
+    msg_id: u32,
+) -> IoResult<()> {
     let msg = &m.msg;
     let len = msg.len();
     let len_buf = (msg.len() as u64).to_be_bytes();
-    let msg_id_buf = m.msg_id.to_be_bytes();
+    let msg_id_buf = msg_id.to_be_bytes();
     let h: [u8; 12] = unsafe { transmute((len_buf, msg_id_buf)) };
     let mut buf = Vec::with_capacity(12 + len);
     buf.extend_from_slice(&h);
@@ -77,8 +77,8 @@ pub async fn on_stream<S: IoStream>(iostream: S, channels: Arc<Channels>) {
     let (mut rs, mut ws) = iostream.split();
     let (tx, mut rx) = unbounded_channel();
     tokio::spawn(async move {
-        while let Some(msg) = rx.recv().await {
-            let result = write_stream(&mut ws, msg).await;
+        while let Some((msg, msg_id)) = rx.recv().await {
+            let result = write_stream(&mut ws, msg, msg_id).await;
             if let Err(e) = result {
                 error!("{}", e);
                 break;
@@ -91,14 +91,22 @@ pub async fn on_stream<S: IoStream>(iostream: S, channels: Arc<Channels>) {
             error!("{}", e);
             break;
         }
-        let msg = result.unwrap();
+        let (msg, msg_id) = result.unwrap();
         let tx2 = tx.clone();
+        let (stream_tx, mut stream_rx) = unbounded_channel();
+        tokio::spawn(async move {
+            while let Some(msg) = stream_rx.recv().await {
+                if let Err(e) = tx2.send((msg, msg_id)) {
+                    error!("stream closed : {}", e);
+                };
+            }
+        });
         let token2 = token.clone();
         let channels2 = channels.clone();
         let connection_info2 = connection_info.clone();
         tokio::spawn(async move {
             channels2
-                .on_message(msg, tx2, token2, connection_info2)
+                .on_message(msg, stream_tx, token2, connection_info2)
                 .await;
         });
     }
@@ -109,24 +117,20 @@ pub struct ContextWithSender<T> {
     pd: PhantomData<T>,
 }
 
-fn send<T: Serialize + 'static>(
-    sender: &UnboundedSender<Response>,
-    msg_id: u32,
-    msg: &T,
-) -> RPCResult<()> {
+fn send<T: Serialize + 'static>(sender: &UnboundedSender<Response>, msg: &T) -> RPCResult<()> {
     if TypeId::of::<T>() == TypeId::of::<()>() {
         return Ok(());
     }
     let msg = serialize(msg)?;
     sender
-        .send(Response { msg, msg_id })
+        .send(Response { msg })
         .map_err(|_| Error::ChannelClosed)?;
     Ok(())
 }
 
 impl<T: Serialize + 'static> ContextWithSender<T> {
     pub fn send(&self, msg: &T) -> RPCResult<()> {
-        send(&self.sender, self.ctx.msg_id, msg)
+        send(&self.sender, msg)
     }
     pub async fn set_token(&self, new_token: &[u8]) {
         self.ctx.set_token(new_token).await
@@ -141,7 +145,6 @@ impl<T: Serialize + 'static> ContextWithSender<T> {
 
 pub struct Context {
     connection_info: Arc<dyn ConnectionInfo>,
-    msg_id: u32,
     token: Arc<RwLock<Vec<u8>>>,
 }
 
@@ -231,12 +234,11 @@ impl Channels {
             rpc_channel,
             Box::new(
                 move |bytes: &[u8], sender: UnboundedSender<Response>, ctx: Context| {
-                    let msg_id = ctx.msg_id;
                     let param = decode::<R>(bytes);
                     let result = p(param, ctx);
                     Box::pin(async move {
                         let msg = result.await;
-                        if let Err(e) = send(&sender, msg_id, &msg) {
+                        if let Err(e) = send(&sender, &msg) {
                             error!("{:?}", e);
                         }
                     })
@@ -258,13 +260,12 @@ impl Channels {
     ) {
         let ctx = Context {
             connection_info,
-            msg_id: msg.msg_id,
             token,
         };
         if let Some(f) = self.channels.get(&msg.channel_id) {
             f(&msg.msg, unbounded_channel, ctx).await;
         } else {
-            error!("unknown channel id {}", msg.msg_id);
+            error!("unknown channel id {}", msg.channel_id);
         }
     }
 }

@@ -217,7 +217,7 @@ fn from_io_result(src: IoError) -> RPCError {
     RPCError::IoError(src.to_string())
 }
 
-pub fn read_msg<R: Read>(n: &mut R) -> RPCResult<Response> {
+pub fn read_msg<R: Read>(n: &mut R) -> RPCResult<(Response, u32)> {
     let mut h = [0u8; 12];
     n.read_exact(&mut h).map_err(from_io_result)?;
     let (len_buf, msg_id_buf): ([u8; 8], [u8; 4]) = unsafe { transmute(h) };
@@ -230,5 +230,5 @@ pub fn read_msg<R: Read>(n: &mut R) -> RPCResult<Response> {
     };
     n.read_exact(&mut msg_bytes).map_err(from_io_result)?;
     let msg = msg_bytes;
-    Ok(Response { msg_id, msg })
+    Ok((Response { msg }, msg_id))
 }
