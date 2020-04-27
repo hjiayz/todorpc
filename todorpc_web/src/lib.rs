@@ -3,11 +3,10 @@ use js_sys::Object;
 use js_sys::Uint8Array;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::io::Cursor;
 use std::rc::Rc;
-use todorpc::{Error as RPCError, Result as RPCResult};
+use todorpc::{Error as RPCError, Response, Result as RPCResult};
 pub use todorpc_client_core::{async_call, call, subscribe};
-use todorpc_client_core::{read_msg, Connect, ConnectNoSend};
+use todorpc_client_core::{Connect, ConnectNoSend};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::{console, BinaryType, CloseEvent, ErrorEvent, EventTarget, MessageEvent, WebSocket};
@@ -56,7 +55,7 @@ impl WSRpc {
         let onmessage_callback = Closure::wrap(Box::new(move |e: MessageEvent| {
             let inner3 = inner2.clone();
             let response = e.data();
-            let mut bytes = Cursor::new(Uint8Array::new(&response).to_vec());
+            let mut bytes = Uint8Array::new(&response).to_vec();
             let (msg, msg_id) = match read_msg(&mut bytes) {
                 Ok(msg) => msg,
                 Err(e) => {
@@ -171,3 +170,18 @@ impl Connect<Box<dyn Fn(RPCResult<Vec<u8>>) -> bool + 'static>> for WSRpc {
 }
 
 impl ConnectNoSend for WSRpc {}
+
+pub fn read_msg(n: &mut [u8]) -> RPCResult<(Response, u32)> {
+    use std::convert::TryInto;
+    if n.len() < 12 {
+        return Err(RPCError::IoError("bad message pack".to_owned()));
+    }
+    let len = u64::from_be_bytes(n[0..8].try_into().unwrap()) as usize;
+    let msg_id = u32::from_be_bytes(n[8..12].try_into().unwrap());
+
+    if n.len() != len + 12 {
+        return Err(RPCError::IoError("bad message pack".to_owned()));
+    }
+    let msg = n[12..(len + 12)].to_vec();
+    Ok((Response { msg }, msg_id))
+}

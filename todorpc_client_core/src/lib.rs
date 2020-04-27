@@ -212,23 +212,3 @@ where
     };
     conn.on_msg(Box::new(on_msg), cb);
 }
-
-fn from_io_result(src: IoError) -> RPCError {
-    RPCError::IoError(src.to_string())
-}
-
-pub fn read_msg<R: Read>(n: &mut R) -> RPCResult<(Response, u32)> {
-    let mut h = [0u8; 12];
-    n.read_exact(&mut h).map_err(from_io_result)?;
-    let (len_buf, msg_id_buf): ([u8; 8], [u8; 4]) = unsafe { transmute(h) };
-    let len = u64::from_be_bytes(len_buf) as usize;
-    let msg_id = u32::from_be_bytes(msg_id_buf);
-
-    let mut msg_bytes = Vec::with_capacity(len);
-    unsafe {
-        msg_bytes.set_len(len);
-    };
-    n.read_exact(&mut msg_bytes).map_err(from_io_result)?;
-    let msg = msg_bytes;
-    Ok((Response { msg }, msg_id))
-}
