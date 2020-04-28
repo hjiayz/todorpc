@@ -1,9 +1,9 @@
 use bincode;
 use futures::channel::oneshot;
 use std::cell::RefCell;
-use std::io::{Error as IoError, Read, Write};
+use std::io::Write;
 use std::mem::transmute;
-use todorpc::{Call, Error as RPCError, Response, Result as RPCResult, Subscribe};
+use todorpc::{Call, Error as RPCError, Result as RPCResult, Subscribe};
 
 pub trait Connect<S> {
     fn is_connected(&self) -> bool;
