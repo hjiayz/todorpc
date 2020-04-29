@@ -3,6 +3,7 @@ use futures::stream::{Stream, StreamExt};
 use futures::task::{Context, Poll};
 use js_sys::Object;
 use js_sys::Uint8Array;
+use log::{debug, trace};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::pin::Pin;
@@ -74,8 +75,8 @@ impl WSRpc {
                         ws_ref.close().unwrap();
                     }
                 }
-                Err(_e) => {
-                    //info?
+                Err(e) => {
+                    debug!("{:?}", e);
                     ws_ref.close().unwrap();
                     return;
                 }
@@ -96,6 +97,7 @@ impl WSRpc {
 
         let on_msgs_ref2 = on_msgs.clone();
         let onclose = Closure::once(Box::new(move |_: CloseEvent| {
+            trace!("websocket closed");
             for sender in on_msgs_ref2.borrow().values() {
                 let _ = sender.unbounded_send(Err(RPCError::ChannelClosed));
             }
@@ -206,6 +208,7 @@ impl Retry {
         result
     }
     async fn connect(self: Rc<Self>) {
+        trace!("connect to {}", &self.url);
         loop {
             let weak = Rc::downgrade(&self);
             let onclose = move || {

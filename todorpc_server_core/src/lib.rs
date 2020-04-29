@@ -98,6 +98,7 @@ pub async fn on_stream<S: IoStream>(iostream: S, channels: Arc<Channels>) {
             while let Some(msg) = stream_rx.recv().await {
                 if let Err(e) = tx2.send((msg, msg_id)) {
                     error!("stream closed : {}", e);
+                    break;
                 };
             }
         });

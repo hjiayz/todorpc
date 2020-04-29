@@ -29,7 +29,9 @@ async fn tlsconnect() -> Result<JsValue, JsValue> {
 
 #[wasm_bindgen(start)]
 pub fn start_init() {
+    use log::Level;
     console_error_panic_hook::set_once();
+    console_log::init_with_level(Level::Trace).expect("error initializing log");
 }
 
 #[wasm_bindgen]
