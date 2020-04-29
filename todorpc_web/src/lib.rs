@@ -11,9 +11,7 @@ use todorpc::{Call, Error as RPCError, Result as RPCResult, Subscribe, RPC};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
-use web_sys::{
-    console, window, BinaryType, CloseEvent, ErrorEvent, EventTarget, MessageEvent, WebSocket,
-};
+use web_sys::{window, BinaryType, CloseEvent, EventTarget, MessageEvent, WebSocket};
 
 pub struct SubscribeStream<T>(
     Pin<Box<dyn Stream<Item = RPCResult<T>>>>,
@@ -41,7 +39,6 @@ pub struct WSRpc {
     ws: Rc<WebSocket>,
     on_msgs: Rc<RefCell<BTreeMap<u32, mpsc::UnboundedSender<RPCResult<Vec<u8>>>>>>,
     _onmessage: Option<Closure<dyn FnMut(MessageEvent)>>,
-    //_onerror: Option<Closure<dyn FnMut(ErrorEvent)>>,
     _onclose: Option<Closure<dyn FnMut(CloseEvent)>>,
     _onopen: Option<Closure<dyn FnMut(EventTarget)>>,
 }
@@ -55,9 +52,10 @@ impl WSRpc {
             u32,
             mpsc::UnboundedSender<RPCResult<Vec<u8>>>,
         >::new()));
-        let (sender, receiver) = oneshot::channel::<()>();
+        let (sender, mut receiver) = mpsc::unbounded::<RPCResult<()>>();
+        let onopen_sender = sender.clone();
         let onopen = Closure::once(Box::new(move |_: EventTarget| {
-            sender.send(()).ok().unwrap();
+            onopen_sender.unbounded_send(Ok(())).unwrap();
         }) as Box<dyn FnOnce(EventTarget)>);
         ws.set_onopen(Some(onopen.as_ref().unchecked_ref()));
         let on_msgs_ref = on_msgs.clone();
@@ -85,19 +83,31 @@ impl WSRpc {
         }) as Box<dyn FnMut(MessageEvent)>);
         ws.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
         ws.set_binary_type(BinaryType::Arraybuffer);
-        let onclose =
-            Closure::once(Box::new(move |_: CloseEvent| on_close()) as Box<dyn FnOnce(CloseEvent)>);
+
+        let close_sender = sender.clone();
+        let on_close_before_open = Closure::once(Box::new(move |_: CloseEvent| {
+            close_sender
+                .unbounded_send(Err(RPCError::NoConnected))
+                .unwrap();
+        }) as Box<dyn FnOnce(CloseEvent)>);
+
+        ws.set_onclose(Some(on_close_before_open.as_ref().unchecked_ref()));
+        receiver.next().await.unwrap()?;
+
+        let on_msgs_ref2 = on_msgs.clone();
+        let onclose = Closure::once(Box::new(move |_: CloseEvent| {
+            for sender in on_msgs_ref2.borrow().values() {
+                let _ = sender.unbounded_send(Err(RPCError::ChannelClosed));
+            }
+            on_close();
+        }) as Box<dyn FnOnce(CloseEvent)>);
         ws.set_onclose(Some(onclose.as_ref().unchecked_ref()));
-        //let onerror =
-        //    Closure::once(Box::new(move |e: ErrorEvent| panic!()) as Box<dyn FnOnce(ErrorEvent)>);
-        //ws.set_onerror(Some(onclose.as_ref().unchecked_ref()));
-        receiver.await.unwrap();
+        drop(on_close_before_open);
         Ok(WSRpc {
             next_id: RefCell::new(0),
             ws,
             on_msgs,
             _onmessage: Some(onmessage),
-            //_onerror: Some(onerror),
             _onclose: Some(onclose),
             _onopen: Some(onopen),
         })
@@ -197,6 +207,18 @@ impl Retry {
     }
     async fn connect(self: Rc<Self>) {
         loop {
+            let weak = Rc::downgrade(&self);
+            let onclose = move || {
+                if let Some(ptr) = weak.upgrade() {
+                    *ptr.conn.borrow_mut() = None;
+                    spawn_local(ptr.connect())
+                }
+            };
+
+            if let Ok(conn) = WSRpc::connect(&self.url, onclose).await {
+                *self.conn.borrow_mut() = Some(conn);
+                break;
+            }
             let (tx, rx) = oneshot::channel();
             let ontimeout = Closure::once(Box::new(move || {
                 let _ = tx.send(());
@@ -209,17 +231,6 @@ impl Retry {
                 )
                 .unwrap();
             let _ = rx.await;
-
-            let weak = Rc::downgrade(&self);
-            let onclose = move || {
-                if let Some(ptr) = weak.upgrade() {
-                    spawn_local(ptr.connect())
-                }
-            };
-            if let Ok(conn) = WSRpc::connect(&self.url, onclose).await {
-                *self.conn.borrow_mut() = Some(conn);
-                break;
-            }
         }
     }
     pub async fn call<C: Call>(&self, params: &C) -> RPCResult<C::Return> {

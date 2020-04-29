@@ -71,7 +71,17 @@ pub fn subscribe_bar(cb: Function, is_tls: bool) {
         }
     };
     spawn_local(async move {
-        let mut stream = con.subscribe(&Bar).unwrap();
+        let mut stream = match con.subscribe(&Bar) {
+            Ok(stream) => stream,
+            Err(e) => {
+                cb.call1(
+                    &JsValue::UNDEFINED,
+                    &JsValue::from(Error::new(&format!("{:?}", e))),
+                )
+                .unwrap();
+                return;
+            }
+        };
         while let Some(res) = stream.next().await {
             match res {
                 Ok(val) => cb.call1(

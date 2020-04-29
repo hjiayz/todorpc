@@ -26,36 +26,60 @@
       }
       async function run() {
         await init();
+        console.log("init finished");
         await connect_ws();
+        console.log("connect websocket finished");
         await connect_wss();
-        subscribe_bar((val) => {
-          if (val instanceof Error) return;
-          document.getElementById("subscribe_bar").innerText = val;
-        }, false);
+        console.log("connect websocket tls finished");
+        function bar() {
+          subscribe_bar((val) => {
+            if (val instanceof Error) {
+              console.error("subscribe_bar", val);
+              setTimeout(bar, 5000);
+              return;
+            }
+            document.getElementById("subscribe_bar").innerText = val;
+          }, false);
+        }
         async function foo() {
           let i = 0;
           while (true) {
-            document.getElementById("call_foo").innerText = await call_foo(
-              i++,
-              false
-            );
+            try {
+              document.getElementById("call_foo").innerText = await call_foo(
+                i++,
+                true
+              );
+            } catch (e) {
+              console.error("foo:", e);
+            }
             await wait();
           }
         }
-        subscribe_bar((val) => {
-          if (val instanceof Error) return;
-          document.getElementById("subscribe_bar_tls").innerText = val;
-        }, true);
+        function bar_tls() {
+          subscribe_bar((val) => {
+            if (val instanceof Error) {
+              console.error("subscribe_bar_tls", val);
+              setTimeout(bar_tls, 5000);
+              return;
+            }
+            document.getElementById("subscribe_bar_tls").innerText = val;
+          }, true);
+        }
         async function foo_tls() {
           let i = 0;
           while (true) {
-            document.getElementById("call_foo_tls").innerText = await call_foo(
-              i++,
-              true
-            );
+            try {
+              document.getElementById(
+                "call_foo_tls"
+              ).innerText = await call_foo(i++, true);
+            } catch (e) {
+              console.error("foo tls:", e);
+            }
             await wait();
           }
         }
+        bar_tls();
+        bar();
         foo_tls();
         foo();
       }
