@@ -1,23 +1,27 @@
 use define::*;
-use todorpc_client_tcp::{async_call, subscribe, TcpClient};
-use tokio::time::{delay_for, Duration};
+use std::time::Duration;
+use todorpc_client_tcp::TcpClient;
+use tokio::stream::StreamExt;
+use tokio::time::delay_for;
 use tokio::*;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let stream = net::TcpStream::connect("127.0.0.1:8081").await?;
-    let client = TcpClient::connect(stream).await;
-    subscribe(Bar, &client, |res| {
-        match res {
-            Ok((s, i)) => println!("bar: {} {}", s, i),
-            Err(e) => println!("bar: {:?}", e),
+    let client =
+        TcpClient::connect("127.0.0.1:8081".parse().unwrap(), Duration::from_secs(5)).await;
+    let client2 = client.clone();
+    tokio::spawn(async move {
+        while let Some(res) = client.subscribe(Bar).await.unwrap().next().await {
+            match res {
+                Ok((s, i)) => println!("bar: {} {}", s, i),
+                Err(e) => println!("bar: {:?}", e),
+            }
         }
-        false
     });
     let mut i = 0;
     loop {
         delay_for(Duration::from_millis(1000)).await;
-        match async_call(Foo(i), &client).await {
+        match client2.call(Foo(i)).await {
             Ok(val) => println!("foo: {}", val),
             Err(e) => {
                 println!("foo: {:?}", e);
