@@ -155,6 +155,12 @@ impl Retry {
         Ok(Arc::new(retry))
     }
     async fn get_client(&self) -> Result<QuicClient> {
+        use std::net::UdpSocket;
+        let socket = UdpSocket::bind("[::]:0").map_err(|e| Error::IoError(e.to_string()))?;
+        self.info
+            .ep
+            .rebind(socket)
+            .map_err(|e| Error::IoError(e.to_string()))?;
         self.client.read().await.clone().ok_or(Error::NoConnected)
     }
     pub async fn call<C: Call>(&self, params: &C) -> Result<C::Return> {
