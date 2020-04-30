@@ -154,17 +154,20 @@ impl Retry {
         };
         Ok(Arc::new(retry))
     }
-    async fn get_client(&self) -> Result<QuicClient> {
-        use std::net::UdpSocket;
-        let socket = UdpSocket::bind("[::]:0").map_err(|e| Error::IoError(e.to_string()))?;
-        self.info
-            .ep
-            .rebind(socket)
-            .map_err(|e| Error::IoError(e.to_string()))?;
+    async fn try_get_client(&self) -> Result<QuicClient> {
+        //todo rebind
         self.client.read().await.clone().ok_or(Error::NoConnected)
     }
+    async fn get_client(&self) -> QuicClient {
+        loop {
+            if let Ok(client) = self.try_get_client().await {
+                return client;
+            }
+            delay_for(self.info.timeout).await;
+        }
+    }
     pub async fn call<C: Call>(&self, params: &C) -> Result<C::Return> {
-        match self.get_client().await?.call(params).await {
+        match self.get_client().await.call(params).await {
             Err(Error::NoConnected) => {
                 self.retry().await;
                 Err(Error::NoConnected)
@@ -176,7 +179,7 @@ impl Retry {
         &self,
         params: &S,
     ) -> Result<mpsc::UnboundedReceiver<Result<S::Return>>> {
-        match self.get_client().await?.subscribe(params).await {
+        match self.get_client().await.subscribe(params).await {
             Err(Error::NoConnected) => {
                 self.retry().await;
                 Err(Error::NoConnected)
