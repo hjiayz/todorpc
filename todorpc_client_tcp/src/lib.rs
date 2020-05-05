@@ -1,21 +1,45 @@
+use log::info;
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use todorpc::*;
-pub use todorpc_client_core::{async_scall as async_call, scall as call, ssubscribe as subscribe};
-use todorpc_client_core::{Connect, ConnectSend};
 use tokio::io::AsyncWriteExt;
 use tokio::io::{AsyncRead, AsyncReadExt, Error as IoError};
 use tokio::net::TcpStream;
 use tokio::stream::StreamExt;
-use tokio::sync::mpsc;
-use tokio::sync::Mutex;
+use tokio::sync::mpsc::*;
+use tokio::time::delay_for;
 
 fn map_io_err(src: IoError) -> Error {
-    Error::IoError(format!("{:?}", src))
+    Error::IoError(src.to_string())
 }
 
-async fn read_msg_async<R: AsyncRead + Unpin>(n: &mut R) -> Result<(Response, u32)> {
+async fn send_param<S: RPC>(
+    param: &S,
+    sender: &UnboundedSender<(Vec<u8>, u32)>,
+    id: u32,
+) -> Result<()> {
+    let ser = bincode::serialize(&param)?;
+    if ser.len() > u16::max_value() as usize {
+        return Err(Error::IoError("message length too big".to_string()));
+    }
+    let len_buf = (ser.len() as u16).to_be_bytes();
+    let channel_buf = S::rpc_channel().to_be_bytes();
+    let msg_buf = id.to_be_bytes();
+    let msg = len_buf
+        .iter()
+        .chain(channel_buf.iter())
+        .chain(msg_buf.iter())
+        .cloned()
+        .chain(ser)
+        .collect();
+    sender.send((msg, id)).map_err(|e| Error::ChannelClosed)?;
+    Ok(())
+}
+
+async fn read_msg_async<R: AsyncRead + Unpin>(n: &mut R) -> Result<(Vec<u8>, u32)> {
     use std::mem::transmute;
     let mut h = [0u8; 12];
     n.read_exact(&mut h).await.map_err(map_io_err)?;
@@ -29,141 +53,191 @@ async fn read_msg_async<R: AsyncRead + Unpin>(n: &mut R) -> Result<(Response, u3
     };
     n.read_exact(&mut msg_bytes).await.map_err(map_io_err)?;
     let msg = msg_bytes;
-    Ok((Response { msg }, msg_id))
+    Ok((msg, msg_id))
 }
 
-struct Inner {
-    sender: Mutex<Option<mpsc::UnboundedSender<Vec<u8>>>>,
-    on_msgs: Mutex<BTreeMap<u32, Box<dyn Fn(Result<Vec<u8>>) -> bool + Send>>>,
-    is_connected: AtomicBool,
-    next_id: AtomicU32,
+struct Reg {
+    sender: UnboundedSender<Result<Vec<u8>>>,
+    msg_id: u32,
+    is_call: bool,
+}
+struct Recv {
+    msg_id: u32,
+    data: Result<Vec<u8>>,
+}
+
+struct Timeout {
+    msg_id: u32,
+}
+
+enum Op {
+    Reg(Reg),
+    Deconnect,
+    Recv(Recv),
+    Timeout(Timeout),
 }
 
 #[derive(Clone)]
 pub struct TcpClient {
-    inner: Arc<Inner>,
+    id: Arc<AtomicU32>,
+    req: UnboundedSender<(Vec<u8>, u32)>,
+    ops: UnboundedSender<Op>,
+    retry: Duration,
 }
 
 impl TcpClient {
-    pub async fn connect(stream: TcpStream) -> TcpClient {
-        let (mut read, mut write) = tokio::io::split(stream);
-        let on_msgs: Mutex<BTreeMap<u32, Box<dyn Fn(Result<Vec<u8>>) -> bool + Send>>> =
-            Mutex::new(BTreeMap::new());
-        let (sender, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
-        let inner = Arc::new(Inner {
-            sender: Mutex::new(Some(sender)),
-            on_msgs,
-            is_connected: AtomicBool::new(true),
-            next_id: AtomicU32::new(0),
+    pub async fn connect(addr: SocketAddr, retry: Duration) -> TcpClient {
+        let (req, mut req_rx) = unbounded_channel::<(Vec<u8>, u32)>();
+        let (ops_tx, mut ops_rx) = unbounded_channel::<Op>();
+        let id = Arc::new(AtomicU32::new(0));
+        let id_ref = id.clone();
+        let ops_tx_ref4 = ops_tx.clone();
+        tokio::spawn(async move {
+            let mut regs = BTreeMap::new();
+            while let Some(op) = ops_rx.next().await {
+                match op {
+                    Op::Reg(reg) => {
+                        let id = reg.msg_id;
+                        if reg.is_call {
+                            let ops_tx_ref5 = ops_tx_ref4.clone();
+                            tokio::spawn(async move {
+                                delay_for(retry).await;
+                                let _ = ops_tx_ref5.send(Op::Timeout(Timeout { msg_id: id }));
+                            });
+                        }
+                        let _ = regs.insert(id, reg);
+                    }
+                    Op::Deconnect => {
+                        id_ref.store(0, Ordering::SeqCst);
+                        for reg in regs.values() {
+                            let _ = reg.sender.send(Err(Error::NoConnected));
+                        }
+                        regs.clear();
+                    }
+                    Op::Recv(recv) => {
+                        let reg = regs.get(&recv.msg_id).unwrap();
+                        let _ = reg.sender.send(recv.data);
+                        if reg.is_call {
+                            let _ = regs.remove(&recv.msg_id);
+                        }
+                    }
+                    Op::Timeout(timeout) => {
+                        if let Some(reg) = regs.remove(&timeout.msg_id) {
+                            let _ = reg.sender.send(Err(Error::Other("timeout".to_owned())));
+                        }
+                    }
+                }
+            }
         });
-        let client = TcpClient { inner };
-        let inner2 = client.inner.clone();
+        let ops_tx_ref = ops_tx.clone();
+        let retry2 = retry.clone();
         tokio::spawn(async move {
             loop {
-                if !inner2.is_connected.load(Ordering::SeqCst) {
-                    break;
-                }
-                let bytes = match rx.next().await {
-                    Some(bytes) => bytes,
-                    None => break,
-                };
-                if let Err(e) = write.write_all(&bytes).await {
-                    println!("{:?}", e);
-                    break;
-                }
-            }
-            let lock = inner2.on_msgs.lock().await;
+                let ops_tx_ref2 = ops_tx_ref.clone();
+                if let Ok(stream) = TcpStream::connect(addr).await {
+                    let stream: TcpStream = stream;
+                    let (mut read, mut write) = stream.into_split();
+                    let handle = tokio::spawn(async move {
+                        while let Ok((msg, id)) = read_msg_async(&mut read).await {
+                            let _ = ops_tx_ref2.send(Op::Recv(Recv {
+                                msg_id: id,
+                                data: Ok(msg),
+                            }));
+                        }
+                    });
 
-            for f in lock.values() {
-                f(Err(Error::ChannelClosed));
+                    while let Some((req_msg, id)) = req_rx.next().await {
+                        dbg!(3);
+                        if let Err(e) = write.write_all(&req_msg).await {
+                            info!("{:?}", e);
+                            break;
+                        }
+                        dbg!(4);
+                    }
+                    let _ = ops_tx_ref.send(Op::Deconnect);
+                    dbg!(2);
+                }
+                delay_for(retry2).await;
             }
-            drop(lock);
-            inner2.is_connected.store(false, Ordering::SeqCst);
         });
-        let inner3 = client.inner.clone();
+        TcpClient {
+            req,
+            ops: ops_tx,
+            id,
+            retry,
+        }
+    }
+    pub async fn call<R: Call>(&self, param: R) -> Result<R::Return> {
+        let (tx, mut rx) = unbounded_channel::<Result<Vec<u8>>>();
+        let id = self.id.fetch_add(1, Ordering::SeqCst);
+        self.ops
+            .send(Op::Reg(Reg {
+                msg_id: id,
+                sender: tx,
+                is_call: true,
+            }))
+            .map_err(|_| Error::ChannelClosed)?;
+        self.req(&param, id).await?;
+        if let Some(msg) = rx.next().await {
+            let result = bincode::deserialize(&msg?)?;
+            return Ok(result);
+        };
+        Err(Error::NoConnected)
+    }
+    pub async fn subscribe<R: Subscribe>(
+        &self,
+        param: R,
+    ) -> Result<UnboundedReceiver<Result<R::Return>>> {
+        let (res_tx, res_rx) = unbounded_channel::<Result<R::Return>>();
+        let this = self.clone();
+        let param = Arc::new(param);
+        let mut rx = self.subscribe_inner(param.clone().as_ref()).await?;
         tokio::spawn(async move {
             loop {
-                if !inner3.is_connected.load(Ordering::SeqCst) {
-                    break;
-                }
-                let (msg, msg_id) = match read_msg_async(&mut read).await {
-                    Err(e) => {
-                        println!("{:?}", e);
-                        break;
+                if let Some(msg) = rx.next().await {
+                    match msg {
+                        Err(e) => {
+                            let _ = res_tx.send(Err(e.clone()));
+                            if let Error::NoConnected = e {
+                                loop {
+                                    if let Ok(new_rx) = this.subscribe_inner(param.as_ref()).await {
+                                        rx = new_rx
+                                    }
+                                    delay_for(this.retry).await;
+                                }
+                            }
+                        }
+                        Ok(msg) => {
+                            let result = bincode::deserialize(&msg);
+                            let _ = res_tx.send(result.map_err(|e| e.into()));
+                        }
                     }
-                    Ok(msg) => msg,
-                };
-
-                let mut lock = inner3.on_msgs.lock().await;
-
-                let f = match lock.get_mut(&msg_id) {
-                    None => {
-                        println!("msg_id {:?} miss", msg_id);
-                        break;
-                    }
-                    Some(f) => f,
-                };
-                if f(Ok(msg.msg)) {
-                    lock.remove(&msg_id);
                 }
             }
-            inner3.is_connected.store(false, Ordering::SeqCst);
-            let mut lock = inner3.sender.lock().await;
-            lock.take();
         });
-        client
+        Ok(res_rx)
+    }
+    async fn subscribe_inner<R: Subscribe>(
+        &self,
+        param: &R,
+    ) -> Result<UnboundedReceiver<Result<Vec<u8>>>> {
+        let (tx, rx) = unbounded_channel::<Result<Vec<u8>>>();
+        let id = self.id.fetch_add(1, Ordering::SeqCst);
+        self.ops
+            .send(Op::Reg(Reg {
+                msg_id: id,
+                sender: tx,
+                is_call: false,
+            }))
+            .map_err(|_| Error::ChannelClosed)?;
+        self.req(param, id).await?;
+        Ok(rx)
+    }
+    async fn req<R: RPC>(&self, param: &R, id: u32) -> Result<()> {
+        if !param.verify() {
+            return Err(Error::VerifyFailed);
+        }
+        send_param(param, &self.req, id).await?;
+        Ok(())
     }
 }
-
-impl Connect<Box<dyn Fn(Result<Vec<u8>>) -> bool + 'static + Send>> for TcpClient {
-    fn is_connected(&self) -> bool {
-        self.inner.is_connected.load(Ordering::SeqCst)
-    }
-    fn send<F: FnOnce(&Self, Result<()>) + 'static + Send>(&self, bytes: &[u8], cb: F) {
-        let client: TcpClient = self.to_owned();
-        let bytes: Vec<u8> = bytes.to_owned();
-        tokio::task::spawn(async move {
-            let lock = client.inner.sender.lock().await;
-            if lock.is_none() {
-                return cb(&client, Err(Error::ChannelClosed));
-            }
-            if lock.as_ref().unwrap().send(bytes).is_err() {
-                cb(&client, Err(Error::ChannelClosed));
-            };
-        });
-    }
-    fn on_msg<F2: FnOnce(&Self, u32) + 'static + Send>(
-        &self,
-        f: Box<dyn Fn(Result<Vec<u8>>) -> bool + 'static + Send>,
-        cb: F2,
-    ) {
-        let client = self.clone();
-        tokio::task::spawn(async move {
-            let mut lock = client.inner.on_msgs.lock().await;
-            let next_id = client.inner.next_id.fetch_add(1, Ordering::SeqCst);
-            if next_id == u32::max_value() {
-                client.inner.is_connected.store(false, Ordering::SeqCst);
-            }
-            lock.insert(next_id, f);
-            drop(lock);
-            cb(&client, next_id);
-        });
-    }
-    fn close_msg_handle<
-        F: FnOnce(Option<Box<dyn Fn(Result<Vec<u8>>) -> bool + 'static + Send>>) + Send + 'static,
-    >(
-        &self,
-        msg_id: u32,
-        cb: F,
-    ) {
-        let client = self.clone();
-        tokio::task::spawn(async move {
-            let mut lock = client.inner.on_msgs.lock().await;
-            let f = lock.remove(&msg_id);
-            drop(lock);
-            cb(f);
-        });
-    }
-}
-
-impl ConnectSend for TcpClient {}
