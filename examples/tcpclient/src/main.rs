@@ -3,7 +3,6 @@ use std::time::Duration;
 use todorpc_client_tcp::TcpClient;
 use tokio::stream::StreamExt;
 use tokio::time::delay_for;
-use tokio::*;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -11,7 +10,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         TcpClient::connect("127.0.0.1:8081".parse().unwrap(), Duration::from_secs(5)).await;
     let client2 = client.clone();
     tokio::spawn(async move {
-        while let Some(res) = client.subscribe(Bar).await.unwrap().next().await {
+        let mut stream = client.subscribe(Bar).await.unwrap();
+        while let Some(res) = stream.next().await {
             match res {
                 Ok((s, i)) => println!("bar: {} {}", s, i),
                 Err(e) => println!("bar: {:?}", e),
@@ -25,10 +25,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(val) => println!("foo: {}", val),
             Err(e) => {
                 println!("foo: {:?}", e);
-                break;
             }
         };
         i += 1;
     }
-    Ok(())
 }

@@ -16,26 +16,23 @@ fn map_io_err(src: IoError) -> Error {
     Error::IoError(src.to_string())
 }
 
-async fn send_param<S: RPC>(
-    param: &S,
-    sender: &UnboundedSender<(Vec<u8>, u32)>,
-    id: u32,
-) -> Result<()> {
+async fn send_param<S: RPC>(param: &S, sender: &UnboundedSender<Op>, msg_id: u32) -> Result<()> {
     let ser = bincode::serialize(&param)?;
     if ser.len() > u16::max_value() as usize {
         return Err(Error::IoError("message length too big".to_string()));
     }
     let len_buf = (ser.len() as u16).to_be_bytes();
     let channel_buf = S::rpc_channel().to_be_bytes();
-    let msg_buf = id.to_be_bytes();
-    let msg = len_buf
+    let msg_buf = msg_id.to_be_bytes();
+    let data = len_buf
         .iter()
         .chain(channel_buf.iter())
         .chain(msg_buf.iter())
         .cloned()
         .chain(ser)
         .collect();
-    sender.send((msg, id)).map_err(|e| Error::ChannelClosed)?;
+    let req = Op::Req(Req { data });
+    sender.send(req).map_err(|_| Error::ChannelClosed)?;
     Ok(())
 }
 
@@ -70,24 +67,28 @@ struct Timeout {
     msg_id: u32,
 }
 
+struct Req {
+    data: Vec<u8>,
+}
+
 enum Op {
     Reg(Reg),
     Deconnect,
     Recv(Recv),
     Timeout(Timeout),
+    Req(Req),
 }
 
 #[derive(Clone)]
 pub struct TcpClient {
     id: Arc<AtomicU32>,
-    req: UnboundedSender<(Vec<u8>, u32)>,
     ops: UnboundedSender<Op>,
     retry: Duration,
 }
 
 impl TcpClient {
     pub async fn connect(addr: SocketAddr, retry: Duration) -> TcpClient {
-        let (req, mut req_rx) = unbounded_channel::<(Vec<u8>, u32)>();
+        let (req_tx, mut req_rx) = unbounded_channel::<Req>();
         let (ops_tx, mut ops_rx) = unbounded_channel::<Op>();
         let id = Arc::new(AtomicU32::new(0));
         let id_ref = id.clone();
@@ -109,22 +110,27 @@ impl TcpClient {
                     }
                     Op::Deconnect => {
                         id_ref.store(0, Ordering::SeqCst);
-                        for reg in regs.values() {
+                        let closed = regs;
+                        regs = BTreeMap::new();
+                        for reg in closed.values() {
                             let _ = reg.sender.send(Err(Error::NoConnected));
                         }
-                        regs.clear();
                     }
                     Op::Recv(recv) => {
-                        let reg = regs.get(&recv.msg_id).unwrap();
-                        let _ = reg.sender.send(recv.data);
-                        if reg.is_call {
-                            let _ = regs.remove(&recv.msg_id);
+                        if let Some(reg) = regs.get(&recv.msg_id) {
+                            let _ = reg.sender.send(recv.data);
+                            if reg.is_call {
+                                let _ = regs.remove(&recv.msg_id);
+                            }
                         }
                     }
                     Op::Timeout(timeout) => {
                         if let Some(reg) = regs.remove(&timeout.msg_id) {
                             let _ = reg.sender.send(Err(Error::Other("timeout".to_owned())));
                         }
+                    }
+                    Op::Req(req) => {
+                        let _ = req_tx.send(req);
                     }
                 }
             }
@@ -137,7 +143,7 @@ impl TcpClient {
                 if let Ok(stream) = TcpStream::connect(addr).await {
                     let stream: TcpStream = stream;
                     let (mut read, mut write) = stream.into_split();
-                    let handle = tokio::spawn(async move {
+                    tokio::spawn(async move {
                         while let Ok((msg, id)) = read_msg_async(&mut read).await {
                             let _ = ops_tx_ref2.send(Op::Recv(Recv {
                                 msg_id: id,
@@ -146,22 +152,19 @@ impl TcpClient {
                         }
                     });
 
-                    while let Some((req_msg, id)) = req_rx.next().await {
-                        dbg!(3);
-                        if let Err(e) = write.write_all(&req_msg).await {
+                    while let Some(req) = req_rx.next().await {
+                        if let Err(e) = write.write_all(&req.data).await {
                             info!("{:?}", e);
                             break;
                         }
-                        dbg!(4);
                     }
+                    drop(write);
                     let _ = ops_tx_ref.send(Op::Deconnect);
-                    dbg!(2);
                 }
                 delay_for(retry2).await;
             }
         });
         TcpClient {
-            req,
             ops: ops_tx,
             id,
             retry,
@@ -201,7 +204,8 @@ impl TcpClient {
                             if let Error::NoConnected = e {
                                 loop {
                                     if let Ok(new_rx) = this.subscribe_inner(param.as_ref()).await {
-                                        rx = new_rx
+                                        rx = new_rx;
+                                        break;
                                     }
                                     delay_for(this.retry).await;
                                 }
@@ -237,7 +241,7 @@ impl TcpClient {
         if !param.verify() {
             return Err(Error::VerifyFailed);
         }
-        send_param(param, &self.req, id).await?;
+        send_param(param, &self.ops, id).await?;
         Ok(())
     }
 }
