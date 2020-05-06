@@ -118,9 +118,8 @@ impl TcpClient {
                     }
                     Op::Recv(recv) => {
                         if let Some(reg) = regs.get(&recv.msg_id) {
-                            let _ = reg.sender.send(recv.data);
-                            if reg.is_call {
-                                let _ = regs.remove(&recv.msg_id);
+                            if reg.sender.send(recv.data).is_err() || reg.is_call {
+                                regs.remove(&recv.msg_id);
                             }
                         }
                     }
