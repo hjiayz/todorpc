@@ -1,4 +1,4 @@
-use log::info;
+use log::{debug, info, trace};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -199,22 +199,30 @@ impl TcpClient {
                 if let Some(msg) = rx.next().await {
                     match msg {
                         Err(e) => {
-                            let _ = res_tx.send(Err(e.clone()));
-                            if let Error::NoConnected = e {
-                                loop {
-                                    if let Ok(new_rx) = this.subscribe_inner(param.as_ref()).await {
-                                        rx = new_rx;
-                                        break;
-                                    }
-                                    delay_for(this.retry).await;
-                                }
+                            if let Err(_) = res_tx.send(Err(e.clone())) {
+                                trace!("subscribe {} end", R::rpc_channel());
+                                break;
                             }
+                            debug!("{:?}", e);
                         }
                         Ok(msg) => {
                             let result = bincode::deserialize(&msg);
-                            let _ = res_tx.send(result.map_err(|e| e.into()));
+                            if let Err(_) = res_tx.send(result.map_err(|e| e.into())) {
+                                trace!("subscribe {} end", R::rpc_channel());
+                                break;
+                            }
                         }
                     }
+                    continue;
+                }
+                delay_for(this.retry).await;
+                loop {
+                    trace!("try subscribe {} again", R::rpc_channel());
+                    if let Ok(new_rx) = this.subscribe_inner(param.as_ref()).await {
+                        rx = new_rx;
+                        break;
+                    }
+                    delay_for(this.retry).await;
                 }
             }
         });

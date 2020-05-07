@@ -35,10 +35,9 @@
           subscribe_bar((val) => {
             if (val instanceof Error) {
               console.error("subscribe_bar", val);
-              setTimeout(bar, 5000);
-              return;
+            } else {
+              document.getElementById("subscribe_bar").innerText = val;
             }
-            document.getElementById("subscribe_bar").innerText = val;
           }, false);
         }
         async function foo() {
@@ -59,10 +58,9 @@
           subscribe_bar((val) => {
             if (val instanceof Error) {
               console.error("subscribe_bar_tls", val);
-              setTimeout(bar_tls, 5000);
-              return;
+            } else {
+              document.getElementById("subscribe_bar_tls").innerText = val;
             }
-            document.getElementById("subscribe_bar_tls").innerText = val;
           }, true);
         }
         async function foo_tls() {

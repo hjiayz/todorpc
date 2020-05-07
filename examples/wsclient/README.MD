@@ -1,15 +1,21 @@
+### install wasm binding tools
+
+cargo install wasm-pack --force
 
 ### build wasm binding
+
 ```
 wasm-pack build --release --target web
 ```
 
 ### install https
+
 ```
 cargo install https --force
 ```
 
 ### run http server
+
 ```
 http
 ```
@@ -25,4 +31,3 @@ Please read examples/server/README.MD
 From examples/server/localhost.p12
 
 ### visit http://localhost:8000
-

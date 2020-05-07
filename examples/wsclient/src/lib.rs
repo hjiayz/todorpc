@@ -1,8 +1,7 @@
 use define::*;
 use futures::stream::StreamExt;
 use js_sys::{Error, Function, Promise};
-use std::rc::Rc;
-use todorpc_web::Retry;
+use todorpc_web::WSRpc;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::{future_to_promise, spawn_local};
 
@@ -12,17 +11,17 @@ extern "C" {
     fn log(s: &str);
 }
 
-static mut CONN: Option<Rc<Retry>> = None;
-static mut TLSCONN: Option<Rc<Retry>> = None;
+static mut CONN: Option<WSRpc> = None;
+static mut TLSCONN: Option<WSRpc> = None;
 
 async fn connect() -> Result<JsValue, JsValue> {
-    let rpc = Retry::new(5000, "ws://localhost:8080/").await;
+    let rpc = WSRpc::connect("ws://localhost:8080/", 5000).await;
     unsafe { CONN = Some(rpc) };
     Ok(JsValue::UNDEFINED)
 }
 
 async fn tlsconnect() -> Result<JsValue, JsValue> {
-    let rpc = Retry::new(5000, "wss://localhost:8082/").await;
+    let rpc = WSRpc::connect("wss://localhost:8082/", 5000).await;
     unsafe { TLSCONN = Some(rpc) };
     Ok(JsValue::UNDEFINED)
 }
@@ -52,7 +51,7 @@ async fn async_call_foo(val: u32, is_tls: bool) -> Result<JsValue, JsValue> {
             CONN.as_ref().unwrap()
         }
     };
-    con.call(&Foo(val))
+    con.call(Foo(val))
         .await
         .map(JsValue::from)
         .map_err(|e| JsValue::from(format!("{:?}", e)))
@@ -73,7 +72,7 @@ pub fn subscribe_bar(cb: Function, is_tls: bool) {
         }
     };
     spawn_local(async move {
-        let mut stream = match con.subscribe(&Bar) {
+        let mut stream = match con.subscribe(Bar) {
             Ok(stream) => stream,
             Err(e) => {
                 cb.call1(

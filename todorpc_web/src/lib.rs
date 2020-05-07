@@ -1,183 +1,308 @@
 use futures::channel::{mpsc, oneshot};
-use futures::stream::{Stream, StreamExt};
-use futures::task::{Context, Poll};
-use js_sys::Object;
+use futures::stream::StreamExt;
 use js_sys::Uint8Array;
-use log::{debug, trace};
-use std::cell::RefCell;
+use log::{debug, error, trace};
 use std::collections::BTreeMap;
-use std::pin::Pin;
-use std::rc::{Rc, Weak};
-use todorpc::{Call, Error as RPCError, Result as RPCResult, Subscribe, RPC};
+use std::rc::Rc;
+use todorpc::{Call, Error as RPCError, Result as RPCResult, Subscribe};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{window, BinaryType, CloseEvent, EventTarget, MessageEvent, WebSocket};
 
-pub struct SubscribeStream<T>(
-    Pin<Box<dyn Stream<Item = RPCResult<T>>>>,
-    u32,
-    Weak<RefCell<BTreeMap<u32, mpsc::UnboundedSender<RPCResult<Vec<u8>>>>>>,
-);
-
-impl<T> Stream for SubscribeStream<T> {
-    type Item = RPCResult<T>;
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<RPCResult<T>>> {
-        self.0.as_mut().poll_next(cx)
-    }
+struct Req {
+    sender: mpsc::UnboundedSender<RPCResult<Vec<u8>>>,
+    is_call: bool,
+    channel_id: u32,
+    data: Vec<u8>,
+}
+struct Recv {
+    msg_id: u32,
+    data: RPCResult<Vec<u8>>,
 }
 
-impl<T> Drop for SubscribeStream<T> {
+struct Timeout {
+    msg_id: u32,
+}
+
+enum Op {
+    Req(Req),
+    Deconnect,
+    Recv(Recv),
+    Timeout(Timeout),
+    Opened,
+}
+
+async fn wait_for(timeout: i32) {
+    let (tx, rx) = oneshot::channel();
+    let ontimeout = Closure::once(Box::new(move || {
+        let _ = tx.send(());
+    }) as Box<dyn FnOnce()>);
+    window()
+        .unwrap()
+        .set_timeout_with_callback_and_timeout_and_arguments_0(
+            ontimeout.as_ref().unchecked_ref(),
+            timeout,
+        )
+        .unwrap();
+    let _ = rx.await;
+}
+
+impl Drop for Ws {
     fn drop(&mut self) {
-        if let Some(ptr) = self.2.upgrade() {
-            ptr.borrow_mut().remove(&self.1).unwrap();
-        }
-    }
-}
-
-pub struct WSRpc {
-    next_id: RefCell<u32>,
-    ws: Rc<WebSocket>,
-    on_msgs: Rc<RefCell<BTreeMap<u32, mpsc::UnboundedSender<RPCResult<Vec<u8>>>>>>,
-    _onmessage: Option<Closure<dyn FnMut(MessageEvent)>>,
-    _onclose: Option<Closure<dyn FnMut(CloseEvent)>>,
-    _onopen: Option<Closure<dyn FnMut(EventTarget)>>,
-}
-
-impl WSRpc {
-    pub async fn connect<F: FnOnce() + 'static>(url: &str, on_close: F) -> RPCResult<WSRpc> {
-        let ws = WebSocket::new(url)
-            .map_err(|e| RPCError::Other(String::from(Object::from(e).to_string())))?;
-        let ws = Rc::new(ws);
-        let on_msgs = Rc::new(RefCell::new(BTreeMap::<
-            u32,
-            mpsc::UnboundedSender<RPCResult<Vec<u8>>>,
-        >::new()));
-        let (sender, mut receiver) = mpsc::unbounded::<RPCResult<()>>();
-        let onopen_sender = sender.clone();
-        let onopen = Closure::once(Box::new(move |_: EventTarget| {
-            onopen_sender.unbounded_send(Ok(())).unwrap();
-        }) as Box<dyn FnOnce(EventTarget)>);
-        ws.set_onopen(Some(onopen.as_ref().unchecked_ref()));
-        let on_msgs_ref = on_msgs.clone();
-        let ws_ref = ws.clone();
-        let onmessage = Closure::wrap(Box::new(move |e: MessageEvent| {
-            let response = e.data();
-            let mut bytes = Uint8Array::new(&response).to_vec();
-            match read_msg(&mut bytes) {
-                Ok((msg, id)) => {
-                    if let Err(_) = on_msgs_ref
-                        .borrow()
-                        .get(&id)
-                        .unwrap()
-                        .unbounded_send(Ok(msg.to_owned()))
-                    {
-                        ws_ref.close().unwrap();
-                    }
-                }
-                Err(e) => {
-                    debug!("{:?}", e);
-                    ws_ref.close().unwrap();
-                    return;
-                }
-            };
-        }) as Box<dyn FnMut(MessageEvent)>);
-        ws.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
-        ws.set_binary_type(BinaryType::Arraybuffer);
-
-        let close_sender = sender.clone();
-        let on_close_before_open = Closure::once(Box::new(move |_: CloseEvent| {
-            close_sender
-                .unbounded_send(Err(RPCError::NoConnected))
-                .unwrap();
-        }) as Box<dyn FnOnce(CloseEvent)>);
-
-        ws.set_onclose(Some(on_close_before_open.as_ref().unchecked_ref()));
-        receiver.next().await.unwrap()?;
-
-        let on_msgs_ref2 = on_msgs.clone();
-        let onclose = Closure::once(Box::new(move |_: CloseEvent| {
-            trace!("websocket closed");
-            for sender in on_msgs_ref2.borrow().values() {
-                let _ = sender.unbounded_send(Err(RPCError::ChannelClosed));
-            }
-            on_close();
-        }) as Box<dyn FnOnce(CloseEvent)>);
-        ws.set_onclose(Some(onclose.as_ref().unchecked_ref()));
-        drop(on_close_before_open);
-        Ok(WSRpc {
-            next_id: RefCell::new(0),
-            ws,
-            on_msgs,
-            _onmessage: Some(onmessage),
-            _onclose: Some(onclose),
-            _onopen: Some(onopen),
-        })
-    }
-    pub async fn call<C: Call>(&self, params: &C) -> RPCResult<C::Return> {
-        let id = self.get_next_id()?;
-        self.send(id, params)?;
-        let (tx, mut rx) = mpsc::unbounded();
-        let _ = self.on_msgs.borrow_mut().insert(id, tx);
-        let bytes = match rx.next().await {
-            Some(r) => r?,
-            None => return Err(RPCError::ChannelClosed),
-        };
-        self.on_msgs.borrow_mut().remove(&id).unwrap();
-        Ok(bincode::deserialize(&bytes)?)
-    }
-    pub fn subscribe<S: Subscribe>(&self, params: &S) -> RPCResult<SubscribeStream<S::Return>> {
-        let id = self.get_next_id()?;
-        self.send(id, params)?;
-        let (tx, rx) = mpsc::unbounded();
-        let _ = self.on_msgs.borrow_mut().insert(id, tx);
-        let result = rx.map(|result| result.and_then(|src| Ok(bincode::deserialize(&src)?)));
-        Ok(SubscribeStream(
-            Box::pin(result),
-            id,
-            Rc::downgrade(&self.on_msgs),
-        ))
-    }
-    fn get_next_id(&self) -> RPCResult<u32> {
-        let mut id = self.next_id.borrow_mut();
-        let val = *id;
-        if val == u32::max_value() {
-            self.ws.close().unwrap();
-            return Err(RPCError::IoError("msg id overflow".to_owned()));
-        };
-        *id += 1;
-        Ok(val)
-    }
-    fn send<R: RPC>(&self, msg_id: u32, params: &R) -> RPCResult<()> {
-        let data = bincode::serialize(&params)?;
-        let len = (data.len() as u16).to_be_bytes();
-        let channel = R::rpc_channel().to_be_bytes();
-        let msg_id = msg_id.to_be_bytes();
-        let bytes: Vec<u8> = len
-            .iter()
-            .chain(channel.iter())
-            .chain(msg_id.iter())
-            .cloned()
-            .chain(data.into_iter())
-            .collect();
-        self.ws
-            .send_with_u8_array(&bytes)
-            .map_err(|_| RPCError::IoError("send msg faild".to_string()))?;
-        Ok(())
-    }
-}
-
-impl Drop for WSRpc {
-    fn drop(&mut self) {
-        self.ws.close().unwrap();
-        self.ws.set_onmessage(None);
-        self.ws.set_onerror(None);
         self.ws.set_onopen(None);
+        self.ws.set_onmessage(None);
         self.ws.set_onclose(None);
     }
 }
 
-pub fn read_msg(n: &mut [u8]) -> RPCResult<(&mut [u8], u32)> {
+struct Ws {
+    ws: WebSocket,
+    _onopen: Closure<dyn FnMut(EventTarget)>,
+    _onclose: Closure<dyn FnMut(CloseEvent)>,
+    _onmessage: Closure<dyn FnMut(MessageEvent)>,
+}
+
+async fn ws_init(url: &str, tx: mpsc::UnboundedSender<Op>, timeout: i32) -> Ws {
+    let ws = loop {
+        match WebSocket::new(&url) {
+            Ok(ws) => break ws,
+            Err(e) => {
+                error!("{:?}", e);
+                wait_for(timeout).await;
+            }
+        };
+    };
+    let ws_ref = ws.clone();
+    let tx_ref = tx.clone();
+    let onopen = Closure::once(Box::new(move |_: EventTarget| {
+        if let Err(_) = tx_ref.unbounded_send(Op::Opened) {
+            ws_ref.close().unwrap();
+        }
+    }) as Box<dyn FnOnce(EventTarget)>);
+    ws.set_onopen(Some(onopen.as_ref().unchecked_ref()));
+    let tx_ref = tx.clone();
+    let onmessage = Closure::wrap(Box::new(move |e: MessageEvent| {
+        let response = e.data();
+        let mut bytes = Uint8Array::new(&response).to_vec();
+        match read_msg(&mut bytes) {
+            Ok((msg, id)) => {
+                if let Err(_) = tx_ref.unbounded_send(Op::Recv(Recv {
+                    msg_id: id,
+                    data: Ok(msg.to_owned()),
+                })) {
+                    trace!("wsrpc closed");
+                }
+            }
+            Err(e) => {
+                debug!("{:?}", e);
+                return;
+            }
+        };
+    }) as Box<dyn FnMut(MessageEvent)>);
+    ws.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
+    ws.set_binary_type(BinaryType::Arraybuffer);
+    let tx_ref = tx.clone();
+    let onclose = Closure::once(Box::new(move |_: CloseEvent| {
+        trace!("websocket closed");
+        let _ = tx_ref.unbounded_send(Op::Deconnect);
+    }) as Box<dyn FnOnce(CloseEvent)>);
+    ws.set_onclose(Some(onclose.as_ref().unchecked_ref()));
+    Ws {
+        ws,
+        _onopen: onopen,
+        _onclose: onclose,
+        _onmessage: onmessage,
+    }
+}
+
+async fn connect(url: String, timeout: i32) -> mpsc::UnboundedSender<Op> {
+    let (tx, mut rx) = mpsc::unbounded();
+    let (open_tx, mut open_rx) = mpsc::unbounded();
+    let tx_ref = tx.clone();
+    spawn_local(async move {
+        let mut id: u32 = 0;
+        let mut events = BTreeMap::<u32, (mpsc::UnboundedSender<RPCResult<Vec<u8>>>, bool)>::new();
+        let mut never_open = true;
+        let mut ws = ws_init(&url, tx_ref.clone(), timeout).await;
+
+        while let Some(op) = rx.next().await {
+            let open_tx = open_tx.clone();
+            let tx_ref = tx_ref.clone();
+            match op {
+                Op::Deconnect => {
+                    let removeds = events;
+                    id = 0;
+                    events = BTreeMap::new();
+                    for removed in removeds.values() {
+                        let _ = removed.0.unbounded_send(Err(RPCError::NoConnected));
+                    }
+                    wait_for(timeout).await;
+                    ws = ws_init(&url, tx_ref, timeout).await;
+                    trace!("deconnect");
+                }
+                Op::Recv(recv) => {
+                    let mut is_call = false;
+                    if let Some(event) = events.get(&recv.msg_id) {
+                        let _ = event.0.unbounded_send(recv.data);
+                        is_call = event.1
+                    }
+                    if is_call {
+                        let _ = events.remove(&recv.msg_id);
+                    }
+                    trace!("recv {}", recv.msg_id);
+                }
+                Op::Timeout(timeout) => {
+                    if let Some(event) = events.remove(&timeout.msg_id) {
+                        trace!("timeout {}", timeout.msg_id);
+                        let _ = event
+                            .0
+                            .unbounded_send(Err(RPCError::Other("timeout".to_owned())));
+                    }
+                }
+                Op::Req(req) => {
+                    trace!("request {}", id);
+                    if id == u32::max_value() {
+                        ws.ws.close().unwrap();
+                        trace!("message id overflow");
+                        continue;
+                    };
+                    id += 1;
+                    if req.is_call {
+                        spawn_local(async move {
+                            wait_for(timeout).await;
+                            let _ = tx_ref.unbounded_send(Op::Timeout(Timeout { msg_id: id }));
+                        });
+                    }
+                    let _ = events.insert(id, (req.sender, req.is_call));
+                    if let Err(e) = send(req.channel_id, id, req.data, &ws.ws) {
+                        debug!("{:?}", e);
+                        if let Some(event) = events.remove(&id) {
+                            let _ = event.0.unbounded_send(Err(e));
+                        }
+                    }
+                }
+                Op::Opened => {
+                    if never_open {
+                        trace!("opened");
+                        let _ = open_tx.unbounded_send(());
+                    }
+                    never_open = false;
+                }
+            }
+        }
+    });
+    open_rx.next().await;
+    tx
+}
+
+#[derive(Clone)]
+pub struct WSRpc {
+    tx: mpsc::UnboundedSender<Op>,
+    timeout: i32,
+}
+
+impl WSRpc {
+    pub async fn connect(url: &str, timeout: i32) -> WSRpc {
+        let tx = connect(url.to_owned(), timeout).await;
+        WSRpc { tx, timeout }
+    }
+    pub async fn call<C: Call>(&self, params: C) -> RPCResult<C::Return> {
+        if !params.verify() {
+            return Err(RPCError::VerifyFailed);
+        }
+        let (tx, mut rx) = mpsc::unbounded();
+        let data = bincode::serialize(&params)?;
+        self.tx
+            .unbounded_send(Op::Req(Req {
+                sender: tx,
+                is_call: true,
+                channel_id: C::rpc_channel(),
+                data,
+            }))
+            .map_err(|_| RPCError::ChannelClosed)?;
+        let bytes = match rx.next().await {
+            Some(r) => r?,
+            None => return Err(RPCError::ChannelClosed),
+        };
+        Ok(bincode::deserialize(&bytes)?)
+    }
+    pub fn subscribe<R: Subscribe>(
+        &self,
+        param: R,
+    ) -> RPCResult<mpsc::UnboundedReceiver<RPCResult<R::Return>>> {
+        let (res_tx, res_rx) = mpsc::unbounded::<RPCResult<R::Return>>();
+        let this = self.clone();
+        let param = Rc::new(param);
+        let mut rx = self.subscribe_inner(param.clone().as_ref())?;
+        spawn_local(async move {
+            loop {
+                if let Some(msg) = rx.next().await {
+                    match msg {
+                        Err(e) => {
+                            if let Err(_) = res_tx.unbounded_send(Err(e.clone())) {
+                                trace!("subscribe {} stop", R::rpc_channel());
+                                break;
+                            }
+                        }
+                        Ok(msg) => {
+                            let result = bincode::deserialize(&msg);
+                            if let Err(_) = res_tx.unbounded_send(result.map_err(|e| e.into())) {
+                                trace!("subscribe {} stop", R::rpc_channel());
+                                break;
+                            }
+                        }
+                    }
+                    continue;
+                }
+                wait_for(this.timeout).await;
+                loop {
+                    trace!("try subscribe {} again", R::rpc_channel());
+                    if let Ok(new_rx) = this.subscribe_inner(param.as_ref()) {
+                        rx = new_rx;
+                        break;
+                    }
+                    wait_for(this.timeout).await;
+                }
+            }
+        });
+        Ok(res_rx)
+    }
+    fn subscribe_inner<R: Subscribe>(
+        &self,
+        param: &R,
+    ) -> RPCResult<mpsc::UnboundedReceiver<RPCResult<Vec<u8>>>> {
+        let (tx, rx) = mpsc::unbounded::<RPCResult<Vec<u8>>>();
+        let data = bincode::serialize(param)?;
+        self.tx
+            .unbounded_send(Op::Req(Req {
+                sender: tx,
+                is_call: false,
+                channel_id: R::rpc_channel(),
+                data,
+            }))
+            .map_err(|_| RPCError::ChannelClosed)?;
+        Ok(rx)
+    }
+}
+
+fn send(channel_id: u32, msg_id: u32, data: Vec<u8>, ws: &WebSocket) -> RPCResult<Vec<u8>> {
+    let len = (data.len() as u16).to_be_bytes();
+    let channel = channel_id.to_be_bytes();
+    let msg_id = msg_id.to_be_bytes();
+    let bytes: Vec<u8> = len
+        .iter()
+        .chain(channel.iter())
+        .chain(msg_id.iter())
+        .cloned()
+        .chain(data.into_iter())
+        .collect();
+    ws.send_with_u8_array(&bytes)
+        .map_err(|_| RPCError::IoError("Send Req Faild".to_owned()))?;
+    Ok(bytes)
+}
+
+fn read_msg(n: &mut [u8]) -> RPCResult<(&mut [u8], u32)> {
     use std::convert::TryInto;
     if n.len() < 12 {
         return Err(RPCError::IoError("bad message pack".to_owned()));
@@ -190,62 +315,4 @@ pub fn read_msg(n: &mut [u8]) -> RPCResult<(&mut [u8], u32)> {
     }
     let msg = &mut n[12..(len + 12)];
     Ok((msg, msg_id))
-}
-
-pub struct Retry {
-    conn: Rc<RefCell<Option<WSRpc>>>,
-    timeout: i32,
-    url: String,
-}
-
-impl Retry {
-    pub async fn new<S: Into<String>>(timeout: i32, url: S) -> Rc<Retry> {
-        let url = url.into();
-        let conn: Rc<RefCell<Option<WSRpc>>> = Rc::new(RefCell::new(None));
-        let result = Rc::new(Retry { conn, url, timeout });
-        let result2 = result.clone();
-        result2.connect().await;
-        result
-    }
-    async fn connect(self: Rc<Self>) {
-        trace!("connect to {}", &self.url);
-        loop {
-            let weak = Rc::downgrade(&self);
-            let onclose = move || {
-                if let Some(ptr) = weak.upgrade() {
-                    *ptr.conn.borrow_mut() = None;
-                    spawn_local(ptr.connect())
-                }
-            };
-
-            if let Ok(conn) = WSRpc::connect(&self.url, onclose).await {
-                *self.conn.borrow_mut() = Some(conn);
-                break;
-            }
-            let (tx, rx) = oneshot::channel();
-            let ontimeout = Closure::once(Box::new(move || {
-                let _ = tx.send(());
-            }) as Box<dyn FnOnce()>);
-            window()
-                .unwrap()
-                .set_timeout_with_callback_and_timeout_and_arguments_0(
-                    ontimeout.as_ref().unchecked_ref(),
-                    self.timeout,
-                )
-                .unwrap();
-            let _ = rx.await;
-        }
-    }
-    pub async fn call<C: Call>(&self, params: &C) -> RPCResult<C::Return> {
-        match self.conn.borrow().as_ref() {
-            None => Err(RPCError::NoConnected),
-            Some(conn) => conn.call(params).await,
-        }
-    }
-    pub fn subscribe<S: Subscribe>(&self, params: &S) -> RPCResult<SubscribeStream<S::Return>> {
-        match self.conn.borrow().as_ref() {
-            None => Err(RPCError::NoConnected),
-            Some(conn) => conn.subscribe(params),
-        }
-    }
 }
