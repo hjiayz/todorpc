@@ -14,3 +14,5 @@ lazy_static = "1.4.0"
 define = { path = "../define"}
 tokio = {version= "0.2.18",features=["fs","io-util","sync","stream","rt-core","macros","time"]}
 quinn = "0.6.1"
+pretty_env_logger = "0.4.0"
+log = "0.4.8"

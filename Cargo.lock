@@ -668,6 +668,8 @@ version = "0.1.0"
 dependencies = [
  "define 0.1.0",
  "lazy_static 1.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "log 0.4.8 (registry+https://github.com/rust-lang/crates.io-index)",
+ "pretty_env_logger 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "quinn 0.6.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde 1.0.106 (registry+https://github.com/rust-lang/crates.io-index)",
  "todorpc 0.1.0",
@@ -1036,26 +1038,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "todorpc_client_core"
-version = "0.1.0"
-dependencies = [
- "bincode 1.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
- "futures 0.3.4 (registry+https://github.com/rust-lang/crates.io-index)",
- "serde 1.0.106 (registry+https://github.com/rust-lang/crates.io-index)",
- "todorpc 0.1.0",
-]
-
-[[package]]
 name = "todorpc_client_quic"
 version = "0.1.0"
 dependencies = [
  "anyhow 1.0.28 (registry+https://github.com/rust-lang/crates.io-index)",
  "bincode 1.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "futures 0.3.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "log 0.4.8 (registry+https://github.com/rust-lang/crates.io-index)",
  "quinn 0.6.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde 1.0.106 (registry+https://github.com/rust-lang/crates.io-index)",
  "todorpc 0.1.0",
- "todorpc_client_core 0.1.0",
  "tokio 0.2.20 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
@@ -1127,7 +1119,6 @@ dependencies = [
  "js-sys 0.3.37 (registry+https://github.com/rust-lang/crates.io-index)",
  "log 0.4.8 (registry+https://github.com/rust-lang/crates.io-index)",
  "todorpc 0.1.0",
- "todorpc_client_core 0.1.0",
  "wasm-bindgen 0.2.60 (registry+https://github.com/rust-lang/crates.io-index)",
  "wasm-bindgen-futures 0.4.10 (registry+https://github.com/rust-lang/crates.io-index)",
  "web-sys 0.3.37 (registry+https://github.com/rust-lang/crates.io-index)",

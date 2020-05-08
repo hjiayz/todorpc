@@ -19,9 +19,6 @@ features = ['serde-serialize']
 [dependencies.todorpc]
 path = '../todorpc'
 
-[dependencies.todorpc_client_core]
-path = '../todorpc_client_core'
-
 [dependencies.web-sys]
 version = '0.3.37'
 features = [

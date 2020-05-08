@@ -108,6 +108,7 @@ async fn ws_init(url: &str, tx: mpsc::UnboundedSender<Op>, timeout: i32) -> Ws {
         let _ = tx_ref.unbounded_send(Op::Deconnect);
     }) as Box<dyn FnOnce(CloseEvent)>);
     ws.set_onclose(Some(onclose.as_ref().unchecked_ref()));
+    //todo connect timeout
     Ws {
         ws,
         _onopen: onopen,
@@ -142,12 +143,14 @@ async fn connect(url: String, timeout: i32) -> mpsc::UnboundedSender<Op> {
                     trace!("deconnect");
                 }
                 Op::Recv(recv) => {
-                    let mut is_call = false;
+                    let mut remove = false;
                     if let Some(event) = events.get(&recv.msg_id) {
-                        let _ = event.0.unbounded_send(recv.data);
-                        is_call = event.1
+                        if let Err(e) = event.0.unbounded_send(recv.data) {
+                            remove = true;
+                        }
+                        remove = event.1 || remove;
                     }
-                    if is_call {
+                    if remove {
                         let _ = events.remove(&recv.msg_id);
                     }
                     trace!("recv {}", recv.msg_id);

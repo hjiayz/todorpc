@@ -1,29 +1,27 @@
+use log::{debug, info};
 use quinn::Connection;
 use quinn::Endpoint;
 use quinn::EndpointBuilder;
 use quinn::RecvStream;
+use quinn::SendStream;
 use quinn::VarInt;
 use serde::de::DeserializeOwned;
 use std::marker::Unpin;
 use std::net::SocketAddr;
-use std::sync::{
-    atomic::{AtomicBool, Ordering::SeqCst},
-    Arc,
-};
 use todorpc::*;
-pub use todorpc_client_core::{async_scall as async_call, scall as call, ssubscribe as subscribe};
 use tokio::io::AsyncReadExt;
-use tokio::io::AsyncWriteExt;
-use tokio::sync::mpsc;
-use tokio::sync::RwLock;
+use tokio::stream::StreamExt;
+use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use tokio::sync::oneshot::{channel, Sender};
 use tokio::time::{delay_for, Duration};
 
 #[derive(Clone)]
 pub struct QuicClient {
-    conn: Connection,
+    timeout: Duration,
+    tx: UnboundedSender<Sender<(SendStream, RecvStream)>>,
 }
 
-async fn send_param<S: RPC, W: AsyncWriteExt + Unpin>(param: &S, sender: &mut W) -> Result<()> {
+async fn send_param<S: RPC>(param: &S, sender: &mut SendStream) -> Result<()> {
     let ser = bincode::serialize(&param)?;
     if ser.len() > u16::max_value() as usize {
         return Err(Error::IoError("message length too big".to_string()));
@@ -33,6 +31,7 @@ async fn send_param<S: RPC, W: AsyncWriteExt + Unpin>(param: &S, sender: &mut W)
     sender.write_all(&len_buf).await.map_err(map_io_error)?;
     sender.write_all(&channel_buf).await.map_err(map_io_error)?;
     sender.write_all(&ser).await.map_err(map_io_error)?;
+    //sender.finish().await.map_err(map_io_error)?;
     Ok(())
 }
 
@@ -55,32 +54,82 @@ async fn read_result<D: DeserializeOwned, R: AsyncReadExt + Unpin>(recv: &mut R)
 }
 
 impl QuicClient {
-    pub fn connect(conn: Connection) -> QuicClient {
-        QuicClient { conn }
+    pub fn connect(
+        timeout: i32,
+        remote_addr: SocketAddr,
+        hostname: &str,
+        builder: EndpointBuilder,
+    ) -> Result<QuicClient> {
+        let (endpoint, _) = builder
+            .bind(&"[::]:0".parse().unwrap())
+            .map_err(|e| Error::Other(e.to_string()))?;
+        let timeout = Duration::from_millis(timeout as u64);
+        let info = ConnectInfo {
+            timeout: timeout.clone(),
+            addr: remote_addr,
+            hostname: hostname.into(),
+            ep: endpoint,
+        };
+        let (tx, mut rx) = unbounded_channel::<Sender<(SendStream, RecvStream)>>();
+        tokio::spawn(async move {
+            let mut conn = info.connect().await;
+            while let Some(stream_tx) = rx.next().await {
+                loop {
+                    let stream = match conn.open_bi().await {
+                        Ok(stream) => stream,
+                        Err(e) => {
+                            debug!("{}", e);
+                            conn.close(VarInt::default(), &[]);
+                            conn = info.connect().await;
+                            continue;
+                        }
+                    };
+                    if let Err(_) = stream_tx.send(stream) {
+                        debug!("connect request channel closed");
+                    }
+                    break;
+                }
+            }
+        });
+        Ok(QuicClient { tx, timeout })
     }
-    pub async fn call<R: Call>(&self, param: &R) -> Result<R::Return> {
-        let mut recv = self.req(param).await?;
+    pub async fn call<R: Call>(&self, param: R) -> Result<R::Return> {
+        let mut recv = self.req(&param).await?;
         let result = read_result(&mut recv).await?;
         let _ = recv.stop(VarInt::from_u32(0));
         Ok(result)
     }
     pub async fn subscribe<R: Subscribe>(
         &self,
-        param: &R,
-    ) -> Result<mpsc::UnboundedReceiver<Result<R::Return>>> {
-        async fn try_read<D: DeserializeOwned>(
-            recv: &mut RecvStream,
-            tx: &mpsc::UnboundedSender<Result<D>>,
-        ) -> Result<()> {
-            let res = read_result(recv).await?;
-            tx.send(Ok(res)).map_err(|_| Error::ChannelClosed)?;
-            Ok(())
+        param: R,
+    ) -> Result<UnboundedReceiver<Result<R::Return>>> {
+        async fn try_read<D: DeserializeOwned, R: Subscribe>(
+            mut recv: RecvStream,
+            tx: &UnboundedSender<Result<D>>,
+            client: &QuicClient,
+            param: &R,
+        ) -> Result<RecvStream> {
+            let res = match read_result(&mut recv).await {
+                Ok(res) => Ok(res),
+                Err(e) => {
+                    debug!("{:?}", e);
+                    recv = client.re_req(param).await?;
+                    Err(Error::NoConnected)
+                }
+            };
+            tx.send(res).map_err(|_| {
+                info!("subscribe end");
+                Error::ChannelClosed
+            })?;
+            Ok(recv)
         }
-        let (tx, rx) = mpsc::unbounded_channel::<Result<R::Return>>();
-        let mut recv = self.req(param).await?;
+        let (tx, rx) = unbounded_channel::<Result<R::Return>>();
+        let mut recv = self.req(&param).await?;
+        let client = self.clone();
         tokio::spawn(async move {
-            while try_read(&mut recv, &tx).await.is_ok() {}
-            let _ = recv.stop(VarInt::from_u32(0));
+            while let Ok(new_recv) = try_read(recv, &tx, &client, &param).await {
+                recv = new_recv
+            }
         });
         Ok(rx)
     }
@@ -88,10 +137,21 @@ impl QuicClient {
         if !param.verify() {
             return Err(Error::VerifyFailed);
         }
-        let (mut send, recv) = self.conn.open_bi().await.map_err(|_| Error::NoConnected)?;
+        let (tx, rx) = channel();
+        self.tx.send(tx).map_err(|_| Error::ChannelClosed)?;
+        let (mut send, recv) = rx.await.map_err(|_| Error::ChannelClosed)?;
 
         send_param(param, &mut send).await?;
-        send.finish().await.map_err(map_io_error)?;
+        Ok(recv)
+    }
+    async fn re_req<R: RPC>(&self, param: &R) -> Result<RecvStream> {
+        let (tx, rx) = channel();
+        self.tx.send(tx).map_err(|_| Error::ChannelClosed)?;
+        let (mut send, recv) = rx.await.map_err(|_| Error::ChannelClosed)?;
+        while let Err(e) = send_param(param, &mut send).await {
+            debug!("{:?}", e);
+            delay_for(self.timeout).await;
+        }
         Ok(recv)
     }
 }
@@ -104,7 +164,15 @@ pub struct ConnectInfo {
 }
 
 impl ConnectInfo {
-    async fn try_connect(&self) -> Result<QuicClient> {
+    async fn try_connect(&self) -> Result<Connection> {
+        let socket = std::net::UdpSocket::bind("[::]:0").map_err(|e| {
+            debug!("{}", e);
+            Error::NoConnected
+        })?;
+        self.ep.rebind(socket).map_err(|e| {
+            debug!("{}", e);
+            Error::NoConnected
+        })?;
         let conn = self
             .ep
             .connect(&self.addr, &self.hostname)
@@ -112,89 +180,14 @@ impl ConnectInfo {
             .await
             .map_err(|e| Error::IoError(e.to_string()))?
             .connection;
-        Ok(QuicClient::connect(conn))
+        Ok(conn)
     }
-    async fn connect(&self) -> QuicClient {
+    async fn connect(&self) -> Connection {
         loop {
             if let Ok(client) = self.try_connect().await {
                 return client;
             }
             delay_for(self.timeout).await
         }
-    }
-}
-
-pub struct Retry {
-    info: Arc<ConnectInfo>,
-    retrying: AtomicBool,
-    client: Arc<RwLock<Option<QuicClient>>>,
-}
-
-impl Retry {
-    pub async fn new<H: Into<String>>(
-        timeout: i32,
-        remote_addr: SocketAddr,
-        hostname: H,
-        builder: EndpointBuilder,
-    ) -> Result<Arc<Retry>> {
-        let (endpoint, _) = builder
-            .bind(&"[::]:0".parse().unwrap())
-            .map_err(|e| Error::Other(e.to_string()))?;
-        let info = Arc::new(ConnectInfo {
-            timeout: Duration::from_millis(timeout as u64),
-            addr: remote_addr,
-            hostname: hostname.into(),
-            ep: endpoint,
-        });
-        let client = Arc::new(RwLock::new(Some(info.connect().await)));
-        let retry = Retry {
-            info,
-            client,
-            retrying: AtomicBool::new(false),
-        };
-        Ok(Arc::new(retry))
-    }
-    async fn try_get_client(&self) -> Result<QuicClient> {
-        //todo rebind
-        self.client.read().await.clone().ok_or(Error::NoConnected)
-    }
-    async fn get_client(&self) -> QuicClient {
-        loop {
-            if let Ok(client) = self.try_get_client().await {
-                return client;
-            }
-            delay_for(self.info.timeout).await;
-        }
-    }
-    pub async fn call<C: Call>(&self, params: &C) -> Result<C::Return> {
-        match self.get_client().await.call(params).await {
-            Err(Error::NoConnected) => {
-                self.retry().await;
-                Err(Error::NoConnected)
-            }
-            other => other,
-        }
-    }
-    pub async fn subscribe<S: Subscribe>(
-        &self,
-        params: &S,
-    ) -> Result<mpsc::UnboundedReceiver<Result<S::Return>>> {
-        match self.get_client().await.subscribe(params).await {
-            Err(Error::NoConnected) => {
-                self.retry().await;
-                Err(Error::NoConnected)
-            }
-            other => other,
-        }
-    }
-    async fn retry(&self) {
-        self.retrying.store(true, SeqCst);
-        *self.client.write().await = None;
-        let client = self.client.clone();
-        let info = self.info.clone();
-        tokio::spawn(async move {
-            *client.write().await = Some(info.connect().await);
-        });
-        self.retrying.store(false, SeqCst);
     }
 }
