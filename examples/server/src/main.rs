@@ -58,8 +58,34 @@ async fn listen_quic(chan: Arc<Channels>, identity: &[u8]) {
     QuicRPCServer::new(chan, incoming).run().await
 }
 
+async fn listen_tcp(chan: Arc<Channels>) {
+    let listener1 = tokio::net::TcpListener::bind("127.0.0.1:8081")
+        .await
+        .unwrap();
+    info!("tcp://127.0.0.1:8081 started");
+    TcpRPCServer::new(chan, listener1).run().await;
+}
+
+async fn listen_wssrpc(chan: Arc<Channels>, identity: &[u8]) {
+    let listener2 = tokio::net::TcpListener::bind("127.0.0.1:8082")
+        .await
+        .unwrap();
+    let identity = Identity::from_pkcs12(&identity, "changeit").unwrap();
+    let tls = TlsAcceptor::new(identity).unwrap();
+    info!("wss://localhost:8082 started");
+    WSRPCServer::new_tls(chan, listener2, tls).run().await;
+}
+
+async fn listen_wsrpc(chan: Arc<Channels>) {
+    let listener0 = tokio::net::TcpListener::bind("127.0.0.1:8080")
+        .await
+        .unwrap();
+    info!("ws://localhost:8080 started");
+    WSRPCServer::new(chan, listener0).run().await;
+}
+
 #[tokio::main]
-async fn main() -> StdResult<(), Box<dyn std::error::Error>> {
+async fn main() {
     formatted_builder()
         .filter_level(log::LevelFilter::Trace)
         .init();
@@ -74,32 +100,14 @@ async fn main() -> StdResult<(), Box<dyn std::error::Error>> {
     chan = chan.set_subscribe(bar);
     let chan = chan.finish();
 
-    let chan2 = chan.clone();
-    tokio::spawn(async move {
-        let listener2 = tokio::net::TcpListener::bind("127.0.0.1:8081")
-            .await
-            .unwrap();
-        info!("tcp://127.0.0.1:8081 started");
-        TcpRPCServer::new(chan2, listener2).run().await;
-    });
+    let chan_cloned = chan.clone();
+    tokio::spawn(async move { listen_tcp(chan_cloned).await });
 
-    let chan3 = chan.clone();
-    tokio::spawn(async move {
-        let listener3 = tokio::net::TcpListener::bind("127.0.0.1:8082")
-            .await
-            .unwrap();
-        let identity = Identity::from_pkcs12(&identity, "changeit").unwrap();
-        let tls = TlsAcceptor::new(identity).unwrap();
-        info!("wss://localhost:8082 started");
-        WSRPCServer::new_tls(chan3, listener3, tls).run().await;
-    });
+    let chan_cloned = chan.clone();
+    tokio::spawn(async move { listen_wssrpc(chan_cloned, &identity).await });
 
-    let chan4 = chan.clone();
-    tokio::spawn(async move { listen_quic(chan4, &identity2).await });
+    let chan_cloned = chan.clone();
+    tokio::spawn(async move { listen_quic(chan_cloned, &identity2).await });
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:8080").await?;
-    info!("ws://localhost:8080 started");
-    WSRPCServer::new(chan, listener).run().await;
-
-    Ok(())
+    listen_wsrpc(chan).await;
 }
