@@ -136,7 +136,7 @@ async fn connect(url: String, timeout: i32) -> mpsc::UnboundedSender<Op> {
                     id = 0;
                     events = BTreeMap::new();
                     for removed in removeds.values() {
-                        let _ = removed.0.unbounded_send(Err(RPCError::NoConnected));
+                        let _ = removed.0.unbounded_send(Err(RPCError::ConnectionReset));
                     }
                     wait_for(timeout).await;
                     ws = ws_init(&url, tx_ref, timeout).await;
@@ -145,7 +145,7 @@ async fn connect(url: String, timeout: i32) -> mpsc::UnboundedSender<Op> {
                 Op::Recv(recv) => {
                     let mut remove = false;
                     if let Some(event) = events.get(&recv.msg_id) {
-                        if let Err(e) = event.0.unbounded_send(recv.data) {
+                        if let Err(_) = event.0.unbounded_send(recv.data) {
                             remove = true;
                         }
                         remove = event.1 || remove;
@@ -158,9 +158,7 @@ async fn connect(url: String, timeout: i32) -> mpsc::UnboundedSender<Op> {
                 Op::Timeout(timeout) => {
                     if let Some(event) = events.remove(&timeout.msg_id) {
                         trace!("timeout {}", timeout.msg_id);
-                        let _ = event
-                            .0
-                            .unbounded_send(Err(RPCError::Other("timeout".to_owned())));
+                        let _ = event.0.unbounded_send(Err(RPCError::Timeout));
                     }
                 }
                 Op::Req(req) => {
@@ -215,7 +213,10 @@ impl WSRpc {
             return Err(RPCError::VerifyFailed);
         }
         let (tx, mut rx) = mpsc::unbounded();
-        let data = bincode::serialize(&params)?;
+        let data = bincode::serialize(&params).map_err(|e| {
+            debug!("{}", e);
+            RPCError::SerializeFaild
+        })?;
         self.tx
             .unbounded_send(Op::Req(Req {
                 sender: tx,
@@ -223,12 +224,15 @@ impl WSRpc {
                 channel_id: C::rpc_channel(),
                 data,
             }))
-            .map_err(|_| RPCError::ChannelClosed)?;
+            .map_err(|_| RPCError::ConnectionDroped)?;
         let bytes = match rx.next().await {
             Some(r) => r?,
-            None => return Err(RPCError::ChannelClosed),
+            None => return Err(RPCError::ConnectionReset),
         };
-        Ok(bincode::deserialize(&bytes)?)
+        Ok(bincode::deserialize(&bytes).map_err(|e| {
+            debug!("{}", e);
+            RPCError::DeserializeFaild
+        })?)
     }
     pub fn subscribe<R: Subscribe>(
         &self,
@@ -249,8 +253,11 @@ impl WSRpc {
                             }
                         }
                         Ok(msg) => {
-                            let result = bincode::deserialize(&msg);
-                            if let Err(_) = res_tx.unbounded_send(result.map_err(|e| e.into())) {
+                            let result = bincode::deserialize(&msg).map_err(|e| {
+                                debug!("{}", e);
+                                RPCError::DeserializeFaild
+                            });
+                            if let Err(_) = res_tx.unbounded_send(result) {
                                 trace!("subscribe {} stop", R::rpc_channel());
                                 break;
                             }
@@ -276,7 +283,10 @@ impl WSRpc {
         param: &R,
     ) -> RPCResult<mpsc::UnboundedReceiver<RPCResult<Vec<u8>>>> {
         let (tx, rx) = mpsc::unbounded::<RPCResult<Vec<u8>>>();
-        let data = bincode::serialize(param)?;
+        let data = bincode::serialize(param).map_err(|e| {
+            debug!("{}", e);
+            RPCError::SerializeFaild
+        })?;
         self.tx
             .unbounded_send(Op::Req(Req {
                 sender: tx,
@@ -284,7 +294,7 @@ impl WSRpc {
                 channel_id: R::rpc_channel(),
                 data,
             }))
-            .map_err(|_| RPCError::ChannelClosed)?;
+            .map_err(|_| RPCError::ConnectionDroped)?;
         Ok(rx)
     }
 }
@@ -300,21 +310,23 @@ fn send(channel_id: u32, msg_id: u32, data: Vec<u8>, ws: &WebSocket) -> RPCResul
         .cloned()
         .chain(data.into_iter())
         .collect();
-    ws.send_with_u8_array(&bytes)
-        .map_err(|_| RPCError::IoError("Send Req Faild".to_owned()))?;
+    ws.send_with_u8_array(&bytes).map_err(|e| {
+        debug!("{:?}", e);
+        RPCError::TransportError
+    })?;
     Ok(bytes)
 }
 
 fn read_msg(n: &mut [u8]) -> RPCResult<(&mut [u8], u32)> {
     use std::convert::TryInto;
     if n.len() < 12 {
-        return Err(RPCError::IoError("bad message pack".to_owned()));
+        return Err(RPCError::TransportError);
     }
     let len = u64::from_be_bytes(n[0..8].try_into().unwrap()) as usize;
     let msg_id = u32::from_be_bytes(n[8..12].try_into().unwrap());
 
     if n.len() != len + 12 {
-        return Err(RPCError::IoError("bad message pack".to_owned()));
+        return Err(RPCError::TransportError);
     }
     let msg = &mut n[12..(len + 12)];
     Ok((msg, msg_id))

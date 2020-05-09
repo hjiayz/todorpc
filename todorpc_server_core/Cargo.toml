@@ -6,12 +6,12 @@ edition = '2018'
 license = 'MIT OR Apache-2.0'
 
 [dependencies]
-serde = '1.0.106'
-bincode = '1.2.1'
+serde = "1.0.107"
+bincode = "1.2.1"
 log = "0.4.8"
 
 [dependencies.tokio]
-version = '0.2.18'
+version = "0.2.20"
 features = [
     'io-util',
     'sync',

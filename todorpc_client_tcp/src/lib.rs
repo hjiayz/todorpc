@@ -12,14 +12,18 @@ use tokio::stream::StreamExt;
 use tokio::sync::mpsc::*;
 use tokio::time::delay_for;
 
-fn map_io_err(src: IoError) -> Error {
-    Error::IoError(src.to_string())
+fn map_io_err(e: IoError) -> Error {
+    debug!("{}", e);
+    Error::TransportError
 }
 
 async fn send_param<S: RPC>(param: &S, sender: &UnboundedSender<Op>, msg_id: u32) -> Result<()> {
-    let ser = bincode::serialize(&param)?;
+    let ser = bincode::serialize(&param).map_err(|e| {
+        debug!("{}", e);
+        Error::SerializeFaild
+    })?;
     if ser.len() > u16::max_value() as usize {
-        return Err(Error::IoError("message length too big".to_string()));
+        return Err(Error::MessageTooBig);
     }
     let len_buf = (ser.len() as u16).to_be_bytes();
     let channel_buf = S::rpc_channel().to_be_bytes();
@@ -32,7 +36,7 @@ async fn send_param<S: RPC>(param: &S, sender: &UnboundedSender<Op>, msg_id: u32
         .chain(ser)
         .collect();
     let req = Op::Req(Req { data });
-    sender.send(req).map_err(|_| Error::ChannelClosed)?;
+    sender.send(req).map_err(|_| Error::ConnectionDroped)?;
     Ok(())
 }
 
@@ -113,7 +117,7 @@ impl TcpClient {
                         let closed = regs;
                         regs = BTreeMap::new();
                         for reg in closed.values() {
-                            let _ = reg.sender.send(Err(Error::NoConnected));
+                            let _ = reg.sender.send(Err(Error::ConnectionReset));
                         }
                     }
                     Op::Recv(recv) => {
@@ -125,7 +129,7 @@ impl TcpClient {
                     }
                     Op::Timeout(timeout) => {
                         if let Some(reg) = regs.remove(&timeout.msg_id) {
-                            let _ = reg.sender.send(Err(Error::Other("timeout".to_owned())));
+                            let _ = reg.sender.send(Err(Error::Timeout));
                         }
                     }
                     Op::Req(req) => {
@@ -178,13 +182,16 @@ impl TcpClient {
                 sender: tx,
                 is_call: true,
             }))
-            .map_err(|_| Error::ChannelClosed)?;
+            .map_err(|_| Error::ConnectionDroped)?;
         self.req(&param, id).await?;
         if let Some(msg) = rx.next().await {
-            let result = bincode::deserialize(&msg?)?;
+            let result = bincode::deserialize(&msg?).map_err(|e| {
+                debug!("{}", e);
+                Error::DeserializeFaild
+            })?;
             return Ok(result);
         };
-        Err(Error::NoConnected)
+        Err(Error::ConnectionReset)
     }
     pub async fn subscribe<R: Subscribe>(
         &self,
@@ -206,8 +213,11 @@ impl TcpClient {
                             debug!("{:?}", e);
                         }
                         Ok(msg) => {
-                            let result = bincode::deserialize(&msg);
-                            if let Err(_) = res_tx.send(result.map_err(|e| e.into())) {
+                            let result = bincode::deserialize(&msg).map_err(|e| {
+                                debug!("{}", e);
+                                Error::DeserializeFaild
+                            });
+                            if let Err(_) = res_tx.send(result) {
                                 trace!("subscribe {} end", R::rpc_channel());
                                 break;
                             }
@@ -240,7 +250,7 @@ impl TcpClient {
                 sender: tx,
                 is_call: false,
             }))
-            .map_err(|_| Error::ChannelClosed)?;
+            .map_err(|_| Error::ConnectionDroped)?;
         self.req(param, id).await?;
         Ok(rx)
     }

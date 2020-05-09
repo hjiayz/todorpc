@@ -22,9 +22,9 @@ pub struct QuicClient {
 }
 
 async fn send_param<S: RPC>(param: &S, sender: &mut SendStream) -> Result<()> {
-    let ser = bincode::serialize(&param)?;
+    let ser = bincode::serialize(&param).map_err(|_| Error::SerializeFaild)?;
     if ser.len() > u16::max_value() as usize {
-        return Err(Error::IoError("message length too big".to_string()));
+        return Err(Error::MessageTooBig);
     }
     let len_buf = (ser.len() as u16).to_be_bytes();
     let channel_buf = S::rpc_channel().to_be_bytes();
@@ -36,7 +36,8 @@ async fn send_param<S: RPC>(param: &S, sender: &mut SendStream) -> Result<()> {
 }
 
 fn map_io_error<E: std::error::Error>(e: E) -> Error {
-    Error::IoError(e.to_string())
+    debug!("{}", e);
+    Error::TransportError
 }
 
 async fn read_result<D: DeserializeOwned, R: AsyncReadExt + Unpin>(recv: &mut R) -> Result<D> {
@@ -50,7 +51,7 @@ async fn read_result<D: DeserializeOwned, R: AsyncReadExt + Unpin>(recv: &mut R)
     recv.read_exact(&mut msg_bytes)
         .await
         .map_err(map_io_error)?;
-    Ok(bincode::deserialize(&msg_bytes)?)
+    Ok(bincode::deserialize(&msg_bytes).map_err(|_| Error::DeserializeFaild)?)
 }
 
 impl QuicClient {
@@ -60,9 +61,10 @@ impl QuicClient {
         hostname: &str,
         builder: EndpointBuilder,
     ) -> Result<QuicClient> {
-        let (endpoint, _) = builder
-            .bind(&"[::]:0".parse().unwrap())
-            .map_err(|e| Error::Other(e.to_string()))?;
+        let (endpoint, _) = builder.bind(&"[::]:0".parse().unwrap()).map_err(|e| {
+            debug!("{}", e);
+            Error::ConnectionFailed
+        })?;
         let timeout = Duration::from_millis(timeout as u64);
         let info = ConnectInfo {
             timeout: timeout.clone(),
@@ -114,12 +116,12 @@ impl QuicClient {
                 Err(e) => {
                     debug!("{:?}", e);
                     recv = client.re_req(param).await?;
-                    Err(Error::NoConnected)
+                    Err(Error::ConnectionReset)
                 }
             };
             tx.send(res).map_err(|_| {
                 info!("subscribe end");
-                Error::ChannelClosed
+                Error::ConnectionReset
             })?;
             Ok(recv)
         }
@@ -138,16 +140,16 @@ impl QuicClient {
             return Err(Error::VerifyFailed);
         }
         let (tx, rx) = channel();
-        self.tx.send(tx).map_err(|_| Error::ChannelClosed)?;
-        let (mut send, recv) = rx.await.map_err(|_| Error::ChannelClosed)?;
+        self.tx.send(tx).map_err(|_| Error::ConnectionDroped)?;
+        let (mut send, recv) = rx.await.map_err(|_| Error::ConnectionDroped)?;
 
         send_param(param, &mut send).await?;
         Ok(recv)
     }
     async fn re_req<R: RPC>(&self, param: &R) -> Result<RecvStream> {
         let (tx, rx) = channel();
-        self.tx.send(tx).map_err(|_| Error::ChannelClosed)?;
-        let (mut send, recv) = rx.await.map_err(|_| Error::ChannelClosed)?;
+        self.tx.send(tx).map_err(|_| Error::ConnectionDroped)?;
+        let (mut send, recv) = rx.await.map_err(|_| Error::ConnectionDroped)?;
         while let Err(e) = send_param(param, &mut send).await {
             debug!("{:?}", e);
             delay_for(self.timeout).await;
@@ -167,18 +169,24 @@ impl ConnectInfo {
     async fn try_connect(&self) -> Result<Connection> {
         let socket = std::net::UdpSocket::bind("[::]:0").map_err(|e| {
             debug!("{}", e);
-            Error::NoConnected
+            Error::ConnectionFailed
         })?;
         self.ep.rebind(socket).map_err(|e| {
             debug!("{}", e);
-            Error::NoConnected
+            Error::ConnectionFailed
         })?;
         let conn = self
             .ep
             .connect(&self.addr, &self.hostname)
-            .map_err(|e| Error::IoError(e.to_string()))?
+            .map_err(|e| {
+                debug!("{}", e);
+                Error::ConnectionFailed
+            })?
             .await
-            .map_err(|e| Error::IoError(e.to_string()))?
+            .map_err(|e| {
+                debug!("{}", e);
+                Error::ConnectionFailed
+            })?
             .connection;
         Ok(conn)
     }

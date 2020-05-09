@@ -1,4 +1,3 @@
-use bincode::Error as BincodeError;
 use serde::{de::DeserializeOwned, Serialize};
 use std::result::Result as StdResult;
 
@@ -6,19 +5,17 @@ pub type Result<T, E = Error> = StdResult<T, E>;
 
 #[derive(Clone, Debug)]
 pub enum Error {
-    BincodeError,
-    ChannelClosed,
-    IoError(String),
+    DeserializeFaild,
+    SerializeFaild,
+    ConnectionDroped,
+    SubscribeDroped,
+    TransportError,
     VerifyFailed,
-    NoConnected,
-    UnknownChannelID(u32),
-    Other(String),
-}
-
-impl From<BincodeError> for Error {
-    fn from(_: BincodeError) -> Self {
-        Error::BincodeError
-    }
+    ConnectionReset,
+    UnknownChannelID,
+    MessageTooBig,
+    ConnectionFailed,
+    Timeout,
 }
 
 pub trait RPC: DeserializeOwned + Serialize + Send + Sync + 'static {

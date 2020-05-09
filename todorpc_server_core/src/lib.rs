@@ -1,5 +1,5 @@
 use bincode::{deserialize, serialize};
-use log::error;
+use log::{debug, error};
 use serde::Serialize;
 use std::any::TypeId;
 use std::collections::BTreeMap;
@@ -122,10 +122,13 @@ fn send<T: Serialize + 'static>(sender: &UnboundedSender<Response>, msg: &T) -> 
     if TypeId::of::<T>() == TypeId::of::<()>() {
         return Ok(());
     }
-    let msg = serialize(msg)?;
+    let msg = serialize(msg).map_err(|e| {
+        debug!("{}", e);
+        Error::SerializeFaild
+    })?;
     sender
         .send(Response { msg })
-        .map_err(|_| Error::ChannelClosed)?;
+        .map_err(|_| Error::ConnectionReset)?;
     Ok(())
 }
 
@@ -179,13 +182,18 @@ pub struct Channels {
 }
 
 fn decode<R: RPC>(bytes: &[u8]) -> RPCResult<R> {
-    deserialize(bytes).map_err(Error::from).and_then(|repo: R| {
-        if repo.verify() {
-            Ok(repo)
-        } else {
-            Err(Error::VerifyFailed)
-        }
-    })
+    deserialize(bytes)
+        .map_err(|e| {
+            debug!("{}", e);
+            Error::DeserializeFaild
+        })
+        .and_then(|repo: R| {
+            if repo.verify() {
+                Ok(repo)
+            } else {
+                Err(Error::VerifyFailed)
+            }
+        })
 }
 
 impl Channels {
