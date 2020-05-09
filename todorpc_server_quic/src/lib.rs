@@ -9,10 +9,11 @@ use quinn::SendStream;
 use std::mem::transmute;
 use std::sync::Arc;
 use todorpc::{Message, Response};
-pub use todorpc_server_core::{Channels, ConnectionInfo, Context, ContextWithSender};
+pub use todorpc_server_core::{
+    token, Channels, ConnectionInfo, Context, ContextWithSender, TokenCommand,
+};
 use tokio::io::AsyncWriteExt;
-use tokio::sync::mpsc::unbounded_channel;
-use tokio::sync::RwLock;
+use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 
 pub struct ConnectionHandle(Connection);
 
@@ -48,7 +49,7 @@ async fn handle_connection(conn: Connecting, channels: Arc<Channels>) -> Result<
         mut bi_streams,
         ..
     } = conn.await?;
-    let token = Arc::new(RwLock::new(vec![]));
+    let token = token();
     while let Some(stream) = bi_streams.next().await {
         let stream = match stream {
             Err(quinn::ConnectionError::ApplicationClosed(info)) => {
@@ -72,7 +73,7 @@ async fn handle_request(
     (mut send, mut recv): (quinn::SendStream, quinn::RecvStream),
     channels: Arc<Channels>,
     conn: quinn::Connection,
-    token: Arc<RwLock<Vec<u8>>>,
+    token: UnboundedSender<TokenCommand>,
 ) -> Result<()> {
     let mut buf = [0u8; 6];
     recv.read_exact(&mut buf).await?;

@@ -2,7 +2,6 @@ use define::*;
 use log::{error, info};
 use native_tls::{Identity, TlsAcceptor};
 use pretty_env_logger::formatted_builder;
-use std::result::Result as StdResult;
 use std::sync::Arc;
 use todorpc::*;
 use todorpc_server_tcp::TcpRPCServer;

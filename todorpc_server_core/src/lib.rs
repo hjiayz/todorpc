@@ -1,5 +1,5 @@
 use bincode::{deserialize, serialize};
-use log::{debug, error};
+use log::{debug, error, warn};
 use serde::Serialize;
 use std::any::TypeId;
 use std::collections::BTreeMap;
@@ -16,7 +16,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::io::Result as IoResult;
 use tokio::stream::{Stream, StreamExt};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
-use tokio::sync::RwLock;
+use tokio::sync::oneshot::{channel, Sender};
 
 pub trait ConnectionInfo: Sync + Send {
     fn remote_address(&self) -> String;
@@ -71,8 +71,33 @@ pub async fn write_stream<W: AsyncWrite + Unpin>(
     Ok(())
 }
 
+pub fn token() -> UnboundedSender<TokenCommand> {
+    let (tx, mut rx) = unbounded_channel();
+    tokio::spawn(async move {
+        let mut token = Vec::default();
+        while let Some(cmd) = rx.recv().await {
+            match cmd {
+                TokenCommand::GetToken(sender) => {
+                    if let Err(e) = sender.send(token.clone()) {
+                        debug!("{:?}", e);
+                    }
+                }
+                TokenCommand::SetToken(new_token) => {
+                    let len = new_token.len();
+                    if len > 1024 {
+                        warn!("token len:{}", len);
+                    }
+                    token = new_token;
+                }
+            }
+        }
+    });
+    tx
+}
+
 pub async fn on_stream<S: IoStream>(iostream: S, channels: Arc<Channels>) {
-    let token = Arc::new(RwLock::new(vec![]));
+    let token = token();
+
     let connection_info = iostream.connection_info();
     let (mut rs, mut ws) = iostream.split();
     let (tx, mut rx) = unbounded_channel();
@@ -136,7 +161,7 @@ impl<T: Serialize + 'static> ContextWithSender<T> {
     pub fn send(&self, msg: &T) -> RPCResult<()> {
         send(&self.sender, msg)
     }
-    pub async fn set_token(&self, new_token: &[u8]) {
+    pub async fn set_token(&self, new_token: Vec<u8>) {
         self.ctx.set_token(new_token).await
     }
     pub async fn get_token(&self) -> Vec<u8> {
@@ -147,19 +172,24 @@ impl<T: Serialize + 'static> ContextWithSender<T> {
     }
 }
 
+pub enum TokenCommand {
+    GetToken(Sender<Vec<u8>>),
+    SetToken(Vec<u8>),
+}
+
 pub struct Context {
     connection_info: Arc<dyn ConnectionInfo>,
-    token: Arc<RwLock<Vec<u8>>>,
+    token: UnboundedSender<TokenCommand>,
 }
 
 impl Context {
-    pub async fn set_token(&self, new_token: &[u8]) {
-        let mut token = self.token.write().await;
-        *token = new_token.to_vec();
+    pub async fn set_token(&self, new_token: Vec<u8>) {
+        let _ = self.token.send(TokenCommand::SetToken(new_token));
     }
     pub async fn get_token(&self) -> Vec<u8> {
-        let token = self.token.read().await;
-        token.to_vec()
+        let (tx, rx) = channel();
+        let _ = self.token.send(TokenCommand::GetToken(tx));
+        rx.await.unwrap_or_default()
     }
     pub fn connection_info(&self) -> Arc<dyn ConnectionInfo> {
         self.connection_info.clone()
@@ -264,7 +294,7 @@ impl Channels {
         &self,
         msg: Message,
         unbounded_channel: UnboundedSender<Response>,
-        token: Arc<RwLock<Vec<u8>>>,
+        token: UnboundedSender<TokenCommand>,
         connection_info: Arc<dyn ConnectionInfo>,
     ) {
         let ctx = Context {
