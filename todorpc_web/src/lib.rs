@@ -166,6 +166,7 @@ async fn connect(url: String, timeout: i32) -> mpsc::UnboundedSender<Op> {
                     if id == u32::max_value() {
                         ws.ws.close().unwrap();
                         trace!("message id overflow");
+                        let _ = req.sender.unbounded_send(Err(RPCError::ConnectionReset));
                         continue;
                     };
                     id += 1;

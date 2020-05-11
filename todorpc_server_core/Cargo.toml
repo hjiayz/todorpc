@@ -6,7 +6,7 @@ edition = '2018'
 license = 'MIT OR Apache-2.0'
 
 [dependencies]
-serde = "1.0.107"
+serde = "1.0.110"
 bincode = "1.2.1"
 log = "0.4.8"
 
