@@ -43,13 +43,14 @@ pub struct Response {
 
 #[macro_export]
 macro_rules! define {
-    ($typ:ident=>$id:expr=>$name:ident($src:ty)->$ret:ty$verify:block) => {
+    ($typ:ident=>$id:expr=>$name:ident($var:ident:$src:ty)->$ret:ty$verify:block) => {
         #[derive(Deserialize, Serialize)]
         pub struct $name(pub $src);
 
         impl RPC for $name {
             type Return = $ret;
             fn verify(&self) -> bool {
+                let $var = self.0;
                 $verify
             }
             fn rpc_channel() -> u32 {
@@ -79,8 +80,8 @@ macro_rules! define {
 
 #[macro_export]
 macro_rules! call {
-    ($id:expr=>$name:ident($src:ty)->$ret:ty$verify:block) => {
-        define!(Call=>$id=>$name($src)->$ret$verify);
+    ($id:expr=>$name:ident($var:ident:$src:ty)->$ret:ty$verify:block) => {
+        define!(Call=>$id=>$name($var:$src)->$ret$verify);
     };
     ($id:expr=>$name:ident->$ret:ty$verify:block) => {
         define!(Call=>$id=>$name->$ret$verify);
@@ -89,8 +90,8 @@ macro_rules! call {
 
 #[macro_export]
 macro_rules! subs {
-    ($id:expr=>$name:ident($src:ty)->$ret:ty$verify:block) => {
-        define!(Subscribe=>$id=>$name($src)->$ret$verify);
+    ($id:expr=>$name:ident($var:ident:$src:ty)->$ret:ty$verify:block) => {
+        define!(Subscribe=>$id=>$name($var:$src)->$ret$verify);
     };
     ($id:expr=>$name:ident->$ret:ty$verify:block) => {
         define!(Subscribe=>$id=>$name->$ret$verify);
