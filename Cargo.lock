@@ -157,7 +157,6 @@ dependencies = [
 name = "define"
 version = "0.1.0"
 dependencies = [
- "serde 1.0.110 (registry+https://github.com/rust-lang/crates.io-index)",
  "todorpc 0.1.0",
 ]
 

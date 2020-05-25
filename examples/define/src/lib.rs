@@ -9,7 +9,7 @@ impl Verify for Foo {
     }
 }
 
-call!( Foo[1] -> u32);
+call!( Foo[1] -> u32 );
 
 #[derive(Deserialize, Serialize)]
 pub struct Bar;
