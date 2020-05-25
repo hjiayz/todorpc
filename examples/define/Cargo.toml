@@ -9,4 +9,3 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 todorpc = { path = '../../todorpc' }
-serde = { version = "1.0.110", features = ["derive"] }
