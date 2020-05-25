@@ -1,4 +1,5 @@
-use serde::{de::DeserializeOwned, Serialize};
+use serde::de::DeserializeOwned;
+pub use serde::{Deserialize, Serialize};
 use std::result::Result as StdResult;
 
 pub type Result<T, E = Error> = StdResult<T, E>;
@@ -18,11 +19,14 @@ pub enum Error {
     Timeout,
 }
 
-pub trait RPC: DeserializeOwned + Serialize + Send + Sync + 'static {
-    type Return: DeserializeOwned + Serialize + 'static + Send + Sync;
+pub trait Verify {
     fn verify(&self) -> bool {
         true
     }
+}
+
+pub trait RPC: Verify + DeserializeOwned + Serialize + Send + Sync + 'static {
+    type Return: DeserializeOwned + Serialize + 'static + Send + Sync;
     fn rpc_channel() -> u32;
 }
 
@@ -43,32 +47,9 @@ pub struct Response {
 
 #[macro_export]
 macro_rules! define {
-    ($typ:ident=>$id:expr=>$name:ident($var:ident:$src:ty)->$ret:ty$verify:block) => {
-        #[derive(Deserialize, Serialize)]
-        pub struct $name(pub $src);
-
+    ($typ:ident $name:ty[$id:literal]->$ret:ty) => {
         impl RPC for $name {
             type Return = $ret;
-            fn verify(&self) -> bool {
-                let $var = &self.0;
-                $verify
-            }
-            fn rpc_channel() -> u32 {
-                $id
-            }
-        }
-
-        impl $typ for $name {}
-    };
-    ($typ:ident=>$id:expr=>$name:ident->$ret:ty) => {
-        #[derive(Deserialize, Serialize)]
-        pub struct $name;
-
-        impl RPC for $name {
-            type Return = $ret;
-            fn verify(&self) -> bool {
-                true
-            }
             fn rpc_channel() -> u32 {
                 $id
             }
@@ -80,20 +61,14 @@ macro_rules! define {
 
 #[macro_export]
 macro_rules! call {
-    ($id:expr=>$name:ident($var:ident:&$src:ty)->$ret:ty$verify:block) => {
-        define!(Call=>$id=>$name($var:$src)->$ret$verify);
-    };
-    ($id:expr=>$name:ident->$ret:ty) => {
-        define!(Call=>$id=>$name->$ret);
+    ($name:ty[$id:literal]->$ret:ty) => {
+        define!(Call $name[$id]->$ret);
     };
 }
 
 #[macro_export]
 macro_rules! subs {
-    ($id:expr=>$name:ident($var:ident:&$src:ty)->$ret:ty$verify:block) => {
-        define!(Subscribe=>$id=>$name($var:$src)->$ret$verify);
-    };
-    ($id:expr=>$name:ident->$ret:ty) => {
-        define!(Subscribe=>$id=>$name->$ret);
+    ($name:ty[$id:literal]->$ret:ty) => {
+        define!(Subscribe $name[$id]->$ret);
     };
 }

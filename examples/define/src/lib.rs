@@ -1,7 +1,18 @@
-use serde::*;
 use todorpc::*;
 
-call!(  1 => Foo ( src : &u32 ) -> u32 {
-    src<&1000000
-});
-subs!(  2 => Bar -> (String, u32));
+#[derive(Deserialize, Serialize)]
+pub struct Foo(pub u32);
+
+impl Verify for Foo {
+    fn verify(&self) -> bool {
+        (self.0 | 1) == 1
+    }
+}
+
+call!( Foo[1] -> u32);
+
+#[derive(Deserialize, Serialize)]
+pub struct Bar(pub u32);
+
+impl Verify for Bar {}
+subs!( Bar[2] -> (String, u32) );
