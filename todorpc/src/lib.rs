@@ -19,20 +19,23 @@ pub enum Error {
     Timeout,
 }
 
-pub trait Verify {
-    fn verify(&self) -> bool {
-        true
+pub trait Verify: RPC {
+    fn verify(&self) -> Result<(), Self::Return> {
+        Ok(())
+    }
+    fn verify_result(self) -> Result<Self, Self::Return> {
+        self.verify().map(|_| self)
     }
 }
 
-pub trait RPC: Verify + DeserializeOwned + Serialize + Send + Sync + 'static {
+pub trait RPC: DeserializeOwned + Serialize + Send + Sync + 'static {
     type Return: DeserializeOwned + Serialize + 'static + Send + Sync;
     fn rpc_channel() -> u32;
 }
 
-pub trait Call: RPC {}
+pub trait Call: RPC + Verify {}
 
-pub trait Subscribe: RPC {}
+pub trait Subscribe: RPC + Verify {}
 
 #[derive(Debug)]
 pub struct Message {

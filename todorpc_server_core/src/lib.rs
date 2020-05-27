@@ -8,7 +8,7 @@ use std::marker::PhantomData;
 use std::mem::transmute;
 use std::pin::Pin;
 use std::sync::Arc;
-use todorpc::{Call, Error, Message, Response, Result as RPCResult, Subscribe, RPC};
+use todorpc::{Call, Error, Message, Response, Result as RPCResult, Subscribe, Verify, RPC};
 use tokio::io::AsyncRead;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWrite;
@@ -211,19 +211,14 @@ pub struct Channels {
     channels: BTreeMap<u32, OnChannelMsg>,
 }
 
-fn decode<R: RPC>(bytes: &[u8]) -> RPCResult<R> {
-    deserialize(bytes)
-        .map_err(|e| {
+fn decode<R: RPC + Verify>(bytes: &[u8]) -> Result<RPCResult<R>, R::Return> {
+    match deserialize::<R>(bytes) {
+        Ok(r) => r.verify_result().map(|res| Ok(res)),
+        Err(e) => {
             debug!("{}", e);
-            Error::DeserializeFaild
-        })
-        .and_then(|repo: R| {
-            if repo.verify() {
-                Ok(repo)
-            } else {
-                Err(Error::VerifyFailed)
-            }
-        })
+            Ok(Err(Error::DeserializeFaild))
+        }
+    }
 }
 
 impl Channels {
@@ -250,9 +245,19 @@ impl Channels {
                         ctx,
                         pd: PhantomData,
                     };
-                    let result = p(param, ctx_with_sender);
+                    let fut = match param {
+                        Ok(param) => Some(p(param, ctx_with_sender)),
+                        Err(ret) => {
+                            if let Err(e) = ctx_with_sender.send(&ret) {
+                                debug!("{:?}", e);
+                            }
+                            None
+                        }
+                    };
                     Box::pin(async move {
-                        result.await;
+                        if let Some(fut) = fut {
+                            fut.await;
+                        }
                     })
                 },
             ),
@@ -273,10 +278,12 @@ impl Channels {
             rpc_channel,
             Box::new(
                 move |bytes: &[u8], sender: UnboundedSender<Response>, ctx: Context| {
-                    let param = decode::<R>(bytes);
-                    let result = p(param, ctx);
+                    let fut = decode::<R>(bytes).map(|param| p(param, ctx));
                     Box::pin(async move {
-                        let msg = result.await;
+                        let msg = match fut {
+                            Ok(fut) => fut.await,
+                            Err(res) => res,
+                        };
                         if let Err(e) = send(&sender, &msg) {
                             error!("{:?}", e);
                         }

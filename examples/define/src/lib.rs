@@ -4,8 +4,12 @@ use todorpc::*;
 pub struct Foo(pub u32);
 
 impl Verify for Foo {
-    fn verify(&self) -> bool {
-        (self.0 & 1) == 1
+    fn verify(&self) -> Result<(), u32> {
+        if (self.0 & 1) == 1 {
+            Ok(())
+        } else {
+            Err(0)
+        }
     }
 }
 

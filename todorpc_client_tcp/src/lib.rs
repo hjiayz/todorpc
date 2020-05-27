@@ -175,6 +175,9 @@ impl TcpClient {
         TcpClient { ops: ops_tx, retry }
     }
     pub async fn call<R: Call>(&self, param: R) -> Result<R::Return> {
+        if let Err(res) = param.verify() {
+            return Ok(res);
+        }
         let mut rx = self.req(&param, true).await?;
         if let Some(msg) = rx.next().await {
             let result = bincode::deserialize(&msg?).map_err(|e| {
@@ -190,6 +193,10 @@ impl TcpClient {
         param: R,
     ) -> Result<UnboundedReceiver<Result<R::Return>>> {
         let (res_tx, res_rx) = unbounded_channel::<Result<R::Return>>();
+        if let Err(res) = param.verify() {
+            let _ = res_tx.send(Ok(res));
+            return Ok(res_rx);
+        }
         let this = self.clone();
         let param = Arc::new(param);
         let mut rx = self.subscribe_inner(param.clone().as_ref()).await?;
@@ -236,19 +243,17 @@ impl TcpClient {
     ) -> Result<UnboundedReceiver<Result<Vec<u8>>>> {
         Ok(self.req(param, false).await?)
     }
-    async fn req<R: RPC>(
+    async fn req<R: RPC + Verify>(
         &self,
         param: &R,
         is_call: bool,
     ) -> Result<UnboundedReceiver<Result<Vec<u8>>>> {
-        if !param.verify() {
-            return Err(Error::VerifyFailed);
-        }
+        let (tx, rx) = unbounded_channel::<Result<Vec<u8>>>();
         let ser = bincode::serialize(&param).map_err(|e| {
             debug!("{}", e);
             Error::SerializeFaild
         })?;
-        let (tx, rx) = unbounded_channel::<Result<Vec<u8>>>();
+
         self.ops
             .send(Op::Req(Req {
                 sender: tx,

@@ -96,6 +96,10 @@ impl QuicClient {
         Ok(QuicClient { tx, timeout })
     }
     pub async fn call<R: Call>(&self, param: R) -> Result<R::Return> {
+        if let Err(res) = param.verify() {
+            return Ok(res);
+        }
+
         let mut recv = self.req(&param).await?;
         let result = read_result(&mut recv).await?;
         let _ = recv.stop(VarInt::from_u32(0));
@@ -126,6 +130,10 @@ impl QuicClient {
             Ok(recv)
         }
         let (tx, rx) = unbounded_channel::<Result<R::Return>>();
+        if let Err(res) = param.verify() {
+            let _ = tx.send(Ok(res));
+            return Ok(rx);
+        }
         let mut recv = self.req(&param).await?;
         let client = self.clone();
         tokio::spawn(async move {
@@ -136,9 +144,6 @@ impl QuicClient {
         Ok(rx)
     }
     async fn req<R: RPC>(&self, param: &R) -> Result<RecvStream> {
-        if !param.verify() {
-            return Err(Error::VerifyFailed);
-        }
         let (tx, rx) = channel();
         self.tx.send(tx).map_err(|_| Error::ConnectionDroped)?;
         let (mut send, recv) = rx.await.map_err(|_| Error::ConnectionDroped)?;

@@ -210,9 +210,9 @@ impl WSRpc {
         WSRpc { tx, timeout }
     }
     pub async fn call<C: Call>(&self, params: C) -> RPCResult<C::Return> {
-        if !params.verify() {
-            return Err(RPCError::VerifyFailed);
-        }
+        if let Err(res) = params.verify() {
+            return Ok(res);
+        };
         let (tx, mut rx) = mpsc::unbounded();
         let data = bincode::serialize(&params).map_err(|e| {
             debug!("{}", e);
@@ -240,6 +240,10 @@ impl WSRpc {
         param: R,
     ) -> RPCResult<mpsc::UnboundedReceiver<RPCResult<R::Return>>> {
         let (res_tx, res_rx) = mpsc::unbounded::<RPCResult<R::Return>>();
+        if let Err(res) = param.verify() {
+            let _ = res_tx.unbounded_send(Ok(res));
+            return Ok(res_rx);
+        };
         let this = self.clone();
         let param = Rc::new(param);
         let mut rx = self.subscribe_inner(param.clone().as_ref())?;
