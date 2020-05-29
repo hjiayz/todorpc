@@ -305,6 +305,9 @@ impl WSRpc {
 }
 
 fn send(channel_id: u32, msg_id: u32, data: Vec<u8>, ws: &WebSocket) -> RPCResult<Vec<u8>> {
+    if data.len() > u16::max_value() as usize {
+        return Err(RPCError::MessageTooBig);
+    }
     let len = (data.len() as u16).to_be_bytes();
     let channel = channel_id.to_be_bytes();
     let msg_id = msg_id.to_be_bytes();
