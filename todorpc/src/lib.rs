@@ -11,7 +11,6 @@ pub enum Error {
     ConnectionDroped,
     SubscribeDroped,
     TransportError,
-    VerifyFailed,
     ConnectionReset,
     UnknownChannelID,
     MessageTooBig,
