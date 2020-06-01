@@ -164,8 +164,14 @@ async fn map_tcpstream(rts: TIoResult<TcpStream>) -> Option<WsStream<TcpStream>>
 async fn map_tlstream(
     rtls: Option<ATlsStream<TcpStream>>,
 ) -> Option<WsStream<ATlsStream<TcpStream>>> {
-    use tokio_tungstenite::accept_async;
-    let rws = accept_async(rtls?).await;
+    use tokio_tungstenite::accept_async_with_config;
+    use tungstenite::protocol::WebSocketConfig;
+    const CONFIG: WebSocketConfig = WebSocketConfig {
+        max_send_queue: None,
+        max_message_size: Some(64 << 10),
+        max_frame_size: Some(64 << 10),
+    };
+    let rws = accept_async_with_config(rtls?, Some(CONFIG)).await;
     if let Err(e) = rws {
         error!("{}", e);
         return None;

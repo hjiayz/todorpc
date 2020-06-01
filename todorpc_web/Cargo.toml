@@ -6,21 +6,21 @@ edition = '2018'
 license = 'MIT OR Apache-2.0'
 
 [dependencies]
-js-sys = "0.3.39"
+js-sys = "0.3.40"
 futures = "0.3.5"
-wasm-bindgen-futures = "0.4.12"
+wasm-bindgen-futures = "0.4.13"
 bincode = "1.2.1"
 log = "0.4.8"
 
 [dependencies.wasm-bindgen]
-version = "0.2.62"
+version = "0.2.63"
 features = ['serde-serialize']
 
 [dependencies.todorpc]
 path = '../todorpc'
 
 [dependencies.web-sys]
-version = "0.3.39"
+version = "0.3.40"
 features = [
     'ErrorEvent',
     'MessageEvent',

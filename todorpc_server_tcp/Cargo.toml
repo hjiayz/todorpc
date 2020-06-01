@@ -13,7 +13,7 @@ log = "0.4.8"
 path = '../todorpc_server_core/'
 
 [dependencies.tokio]
-version = "0.2.20"
+version = "0.2.21"
 features = [
     'tcp',
     'io-util',
