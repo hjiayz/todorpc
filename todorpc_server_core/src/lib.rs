@@ -137,6 +137,8 @@ pub async fn on_stream<S: IoStream>(iostream: S, channels: Arc<Channels>) {
         });
     }
 }
+
+#[derive(Clone)]
 pub struct ContextWithSender<T> {
     sender: UnboundedSender<Response>,
     ctx: Context,
@@ -177,6 +179,7 @@ pub enum TokenCommand {
     SetToken(Vec<u8>),
 }
 
+#[derive(Clone)]
 pub struct Context {
     connection_info: Arc<dyn ConnectionInfo>,
     token: UnboundedSender<TokenCommand>,
