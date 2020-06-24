@@ -181,6 +181,9 @@ impl<T: Serialize + 'static> ContextWithSender<T> {
     pub fn connection_info(&self) -> Arc<dyn ConnectionInfo> {
         self.ctx.connection_info().clone()
     }
+    pub fn context(&self) -> &Context {
+        &self.ctx
+    }
 }
 
 pub enum TokenCommand {
