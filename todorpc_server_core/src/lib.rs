@@ -138,11 +138,20 @@ pub async fn on_stream<S: IoStream>(iostream: S, channels: Arc<Channels>) {
     }
 }
 
-#[derive(Clone)]
 pub struct ContextWithSender<T> {
     sender: UnboundedSender<Response>,
     ctx: Context,
     pd: PhantomData<T>,
+}
+
+impl<T> Clone for ContextWithSender<T> {
+    fn clone(&self) -> Self {
+        ContextWithSender {
+            sender: self.sender.clone(),
+            ctx: self.ctx.clone(),
+            pd: PhantomData,
+        }
+    }
 }
 
 fn send<T: Serialize + 'static>(sender: &UnboundedSender<Response>, msg: &T) -> RPCResult<()> {
