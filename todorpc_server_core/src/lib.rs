@@ -95,9 +95,8 @@ pub fn token() -> UnboundedSender<TokenCommand> {
     tx
 }
 
-pub async fn on_stream<S: IoStream>(iostream: S, channels: Arc<Channels>) {
+pub async fn on_stream<S: IoStream>(iostream: S, channels: Arc<Channels>, id: u128) {
     let token = token();
-
     let connection_info = iostream.connection_info();
     let (mut rs, mut ws) = iostream.split();
     let (tx, mut rx) = unbounded_channel();
@@ -132,7 +131,7 @@ pub async fn on_stream<S: IoStream>(iostream: S, channels: Arc<Channels>) {
         let connection_info2 = connection_info.clone();
         tokio::spawn(async move {
             channels2
-                .on_message(msg, stream_tx, token2, connection_info2)
+                .on_message(msg, stream_tx, token2, connection_info2, id)
                 .await;
         });
     }
@@ -184,6 +183,9 @@ impl<T: Serialize + 'static> ContextWithSender<T> {
     pub fn context(&self) -> &Context {
         &self.ctx
     }
+    pub fn id(&self) -> u128 {
+        self.ctx.id
+    }
 }
 
 pub enum TokenCommand {
@@ -195,6 +197,7 @@ pub enum TokenCommand {
 pub struct Context {
     connection_info: Arc<dyn ConnectionInfo>,
     token: UnboundedSender<TokenCommand>,
+    id: u128,
 }
 
 impl Context {
@@ -208,6 +211,9 @@ impl Context {
     }
     pub fn connection_info(&self) -> Arc<dyn ConnectionInfo> {
         self.connection_info.clone()
+    }
+    pub fn id(&self) -> u128 {
+        self.id
     }
 }
 
@@ -318,10 +324,12 @@ impl Channels {
         unbounded_channel: UnboundedSender<Response>,
         token: UnboundedSender<TokenCommand>,
         connection_info: Arc<dyn ConnectionInfo>,
+        id: u128,
     ) {
         let ctx = Context {
             connection_info,
             token,
+            id,
         };
         if let Some(f) = self.channels.get(&msg.channel_id) {
             f(&msg.msg, unbounded_channel, ctx).await;
@@ -346,9 +354,12 @@ where
     }
     pub async fn run(self) {
         let mut stream = self.stream;
+        let mut count = 0u128;
         while let Some(iostream) = stream.next().await {
             let channels = self.channels.clone();
-            tokio::spawn(async move { on_stream(iostream, channels).await });
+            let id = count;
+            count += 1u128;
+            tokio::spawn(async move { on_stream(iostream, channels, id).await });
         }
     }
 }

@@ -33,9 +33,12 @@ impl QuicRPCServer {
         QuicRPCServer { channels, incoming }
     }
     pub async fn run(mut self) {
+        let mut count = 0u128;
         while let Some(connecting) = self.incoming.next().await {
+            let id = count;
+            count += 1u128;
             tokio::spawn(
-                handle_connection(connecting, self.channels.clone()).unwrap_or_else(move |e| {
+                handle_connection(connecting, self.channels.clone(), id).unwrap_or_else(move |e| {
                     error!("connection failed: {reason}", reason = e.to_string())
                 }),
             );
@@ -43,7 +46,7 @@ impl QuicRPCServer {
     }
 }
 
-async fn handle_connection(conn: Connecting, channels: Arc<Channels>) -> Result<()> {
+async fn handle_connection(conn: Connecting, channels: Arc<Channels>, id: u128) -> Result<()> {
     let quinn::NewConnection {
         connection,
         mut bi_streams,
@@ -62,8 +65,14 @@ async fn handle_connection(conn: Connecting, channels: Arc<Channels>) -> Result<
             Ok(s) => s,
         };
         tokio::spawn(
-            handle_request(stream, channels.clone(), connection.clone(), token.clone())
-                .unwrap_or_else(move |e| error!("failed: {reason}", reason = e.to_string())),
+            handle_request(
+                stream,
+                channels.clone(),
+                connection.clone(),
+                token.clone(),
+                id,
+            )
+            .unwrap_or_else(move |e| error!("failed: {reason}", reason = e.to_string())),
         );
     }
     Ok(())
@@ -74,6 +83,7 @@ async fn handle_request(
     channels: Arc<Channels>,
     conn: quinn::Connection,
     token: UnboundedSender<TokenCommand>,
+    id: u128,
 ) -> Result<()> {
     let mut buf = [0u8; 6];
     recv.read_exact(&mut buf).await?;
@@ -97,7 +107,9 @@ async fn handle_request(
         }
     });
     let connection_info = Arc::new(ConnectionHandle(conn));
-    channels.on_message(msg, tx, token, connection_info).await;
+    channels
+        .on_message(msg, tx, token, connection_info, id)
+        .await;
 
     Ok(())
 }
