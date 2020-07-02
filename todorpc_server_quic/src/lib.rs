@@ -53,6 +53,7 @@ async fn handle_connection(conn: Connecting, channels: Arc<Channels>, id: u128) 
         ..
     } = conn.await?;
     let token = token();
+    let connection_info = Arc::new(ConnectionHandle(connection));
     while let Some(stream) = bi_streams.next().await {
         let stream = match stream {
             Err(quinn::ConnectionError::ApplicationClosed(info)) => {
@@ -68,20 +69,21 @@ async fn handle_connection(conn: Connecting, channels: Arc<Channels>, id: u128) 
             handle_request(
                 stream,
                 channels.clone(),
-                connection.clone(),
+                connection_info.clone(),
                 token.clone(),
                 id,
             )
             .unwrap_or_else(move |e| error!("failed: {reason}", reason = e.to_string())),
         );
     }
+    channels.on_close(token, connection_info, id).await;
     Ok(())
 }
 
 async fn handle_request(
     (mut send, mut recv): (quinn::SendStream, quinn::RecvStream),
     channels: Arc<Channels>,
-    conn: quinn::Connection,
+    connection_info: Arc<ConnectionHandle>,
     token: UnboundedSender<TokenCommand>,
     id: u128,
 ) -> Result<()> {
@@ -106,7 +108,6 @@ async fn handle_request(
             }
         }
     });
-    let connection_info = Arc::new(ConnectionHandle(conn));
     channels
         .on_message(msg, tx, token, connection_info, id)
         .await;

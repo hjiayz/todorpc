@@ -135,6 +135,7 @@ pub async fn on_stream<S: IoStream>(iostream: S, channels: Arc<Channels>, id: u1
                 .await;
         });
     }
+    channels.on_close(token, connection_info, id).await;
 }
 
 pub struct ContextWithSender<T> {
@@ -230,6 +231,9 @@ type OnChannelMsg = Box<
 #[derive(Default)]
 pub struct Channels {
     channels: BTreeMap<u32, OnChannelMsg>,
+    on_close: Option<
+        Box<dyn Send + Sync + Fn(Context) -> Pin<Box<dyn Future<Output = ()> + Send + Sync>>>,
+    >,
 }
 
 fn decode<R: RPC + Verify>(bytes: &[u8]) -> Result<RPCResult<R>, R::Return> {
@@ -314,6 +318,17 @@ impl Channels {
         );
         self
     }
+    pub fn set_onclose<F, Fut>(mut self, onclose: F) -> Self
+    where
+        Fut: Future<Output = ()> + Send + Sync + 'static,
+        F: Fn(Context) -> Fut + Send + Sync + 'static,
+    {
+        self.on_close = Some(Box::new(move |ctx| {
+            let fut = onclose(ctx);
+            Box::pin(async move { fut.await })
+        }));
+        self
+    }
     pub fn finish(self) -> Arc<Channels> {
         Arc::new(self)
     }
@@ -335,6 +350,22 @@ impl Channels {
             f(&msg.msg, unbounded_channel, ctx).await;
         } else {
             error!("unknown channel id {}", msg.channel_id);
+        }
+    }
+
+    pub async fn on_close(
+        &self,
+        token: UnboundedSender<TokenCommand>,
+        connection_info: Arc<dyn ConnectionInfo>,
+        id: u128,
+    ) {
+        let ctx = Context {
+            token,
+            connection_info,
+            id,
+        };
+        if let Some(ref f) = self.on_close {
+            f(ctx).await;
         }
     }
 }
