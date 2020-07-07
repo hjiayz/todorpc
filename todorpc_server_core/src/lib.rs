@@ -220,7 +220,7 @@ impl Context {
 
 type OnChannelMsg = Box<
     dyn Fn(
-            &[u8],
+            Vec<u8>,
             UnboundedSender<Response>,
             Context,
         ) -> Pin<Box<dyn Future<Output = ()> + Send + Sync>>
@@ -263,8 +263,8 @@ impl Channels {
         self.channels.insert(
             rpc_channel,
             Box::new(
-                move |bytes: &[u8], sender: UnboundedSender<Response>, ctx: Context| {
-                    let param = decode::<R>(bytes);
+                move |bytes: Vec<u8>, sender: UnboundedSender<Response>, ctx: Context| {
+                    let param = decode::<R>(&bytes);
                     let ctx_with_sender = ContextWithSender::<R::Return> {
                         sender,
                         ctx,
@@ -302,8 +302,8 @@ impl Channels {
         self.channels.insert(
             rpc_channel,
             Box::new(
-                move |bytes: &[u8], sender: UnboundedSender<Response>, ctx: Context| {
-                    let fut = decode::<R>(bytes).map(|param| p(param, ctx));
+                move |bytes: Vec<u8>, sender: UnboundedSender<Response>, ctx: Context| {
+                    let fut = decode::<R>(&bytes).map(|param| p(param, ctx));
                     Box::pin(async move {
                         let msg = match fut {
                             Ok(fut) => fut.await,
@@ -347,7 +347,7 @@ impl Channels {
             id,
         };
         if let Some(f) = self.channels.get(&msg.channel_id) {
-            f(&msg.msg, unbounded_channel, ctx).await;
+            f(msg.msg, unbounded_channel, ctx).await;
         } else {
             error!("unknown channel id {}", msg.channel_id);
         }

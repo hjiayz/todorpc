@@ -147,17 +147,22 @@ impl IoStream for WsStream<ATlsStream<TcpStream>> {
 
 async fn map_tcpstream(rts: TIoResult<TcpStream>) -> Option<WsStream<TcpStream>> {
     use tokio_tungstenite::accept_async;
-    if let Err(e) = rts {
-        error!("{}", e);
-        return None;
-    }
-    let ts = rts.unwrap();
-    let rws = accept_async(ts).await;
-    if let Err(e) = rws {
-        error!("{}", e);
-        return None;
-    }
-    let ws = rws.unwrap();
+    let ts = rts
+        .map_err(|e| {
+            error!("{}", e);
+        })
+        .ok()?;
+    ts.set_nodelay(true)
+        .map_err(|e| {
+            error!("{}", e);
+        })
+        .ok()?;
+    let ws = accept_async(ts)
+        .await
+        .map_err(|e| {
+            error!("{}", e);
+        })
+        .ok()?;
     Some(WsStream(ws))
 }
 
@@ -171,12 +176,20 @@ async fn map_tlstream(
         max_message_size: Some(64 << 10),
         max_frame_size: Some(64 << 10),
     };
-    let rws = accept_async_with_config(rtls?, Some(CONFIG)).await;
-    if let Err(e) = rws {
-        error!("{}", e);
-        return None;
+    if let Some(rtls) = &rtls {
+        rtls.get_ref()
+            .set_nodelay(true)
+            .map_err(|e| {
+                error!("{}", e);
+            })
+            .ok()?;
     }
-    let ws = rws.unwrap();
+    let ws = accept_async_with_config(rtls?, Some(CONFIG))
+        .await
+        .map_err(|e| {
+            error!("{}", e);
+        })
+        .ok()?;
     Some(WsStream(ws))
 }
 

@@ -27,11 +27,17 @@ impl IoStream for TcpStream {
 }
 
 async fn map_tcpstream(rts: TIoResult<TokioTcpStream>) -> Option<TcpStream> {
-    if let Err(e) = rts {
-        error!("{}", e);
-        return None;
-    }
-    Some(TcpStream(rts.unwrap()))
+    let rts = rts
+        .map_err(|e| {
+            error!("{}", e);
+        })
+        .ok()?;
+    rts.set_nodelay(true)
+        .map_err(|e| {
+            error!("{}", e);
+        })
+        .ok()?;
+    Some(TcpStream(rts))
 }
 
 pub struct TcpRPCServer {
