@@ -1,5 +1,6 @@
 use bincode::{deserialize, serialize};
 use log::{debug, error, warn};
+use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::any::TypeId;
 use std::collections::BTreeMap;
@@ -8,14 +9,16 @@ use std::marker::PhantomData;
 use std::mem::transmute;
 use std::pin::Pin;
 use std::sync::Arc;
-use todorpc::{Call, Error, Message, Response, Result as RPCResult, Subscribe, Verify, RPC};
+use todorpc::{
+    Call, Error, Message, Response, Result as RPCResult, Subscribe, Upload, Verify, RPC,
+};
 use tokio::io::AsyncRead;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWrite;
 use tokio::io::AsyncWriteExt;
 use tokio::io::Result as IoResult;
 use tokio::stream::{Stream, StreamExt};
-use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
+use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot::{channel, Sender};
 
 pub trait ConnectionInfo: Sync + Send {
@@ -109,6 +112,7 @@ pub async fn on_stream<S: IoStream>(iostream: S, channels: Arc<Channels>, id: u1
             }
         }
     });
+    let mut upload_list: BTreeMap<u32, UnboundedSender<Vec<u8>>> = BTreeMap::new();
     loop {
         let result = read_stream(&mut rs).await;
         if let Err(e) = result {
@@ -116,6 +120,21 @@ pub async fn on_stream<S: IoStream>(iostream: S, channels: Arc<Channels>, id: u1
             break;
         }
         let (msg, msg_id) = result.unwrap();
+        let is_upload_msg = msg.channel_id == u32::max_value();
+        if is_upload_msg {
+            if let Some(upload_tx) = upload_list.get(&msg_id) {
+                if msg.msg.len() > 0 {
+                    if let Err(e) = upload_tx.send(msg.msg) {
+                        debug!("{}", e);
+                    }
+                } else {
+                    upload_list.remove(&msg_id);
+                }
+                continue;
+            }
+            error!("upload message id error");
+            continue;
+        }
         let tx2 = tx.clone();
         let (stream_tx, mut stream_rx) = unbounded_channel();
         tokio::spawn(async move {
@@ -129,11 +148,15 @@ pub async fn on_stream<S: IoStream>(iostream: S, channels: Arc<Channels>, id: u1
         let token2 = token.clone();
         let channels2 = channels.clone();
         let connection_info2 = connection_info.clone();
-        tokio::spawn(async move {
-            channels2
-                .on_message(msg, stream_tx, token2, connection_info2, id)
-                .await;
-        });
+        let (upload_tx, fut) = channels2.on_message(msg, stream_tx, token2, connection_info2, id);
+        if let Some(fut) = fut {
+            tokio::spawn(async {
+                fut.await;
+            });
+        }
+        if let Some(upload_tx) = upload_tx {
+            upload_list.insert(msg_id, upload_tx);
+        }
     }
     channels.on_close(token, connection_info, id).await;
 }
@@ -166,6 +189,34 @@ fn send<T: Serialize + 'static>(sender: &UnboundedSender<Response>, msg: &T) -> 
         .send(Response { msg })
         .map_err(|_| Error::ConnectionReset)?;
     Ok(())
+}
+
+pub struct ContextWithUpload<T> {
+    recv: UnboundedReceiver<Vec<u8>>,
+    ctx: Context,
+    pd: PhantomData<T>,
+}
+
+impl<T: DeserializeOwned + 'static> ContextWithUpload<T> {
+    pub fn into_stream(self) -> impl Stream<Item = RPCResult<T>> {
+        self.recv
+            .map(|bytes| deserialize(&bytes).map_err(|_| Error::DeserializeFaild))
+    }
+    pub async fn set_token(&self, new_token: Vec<u8>) {
+        self.ctx.set_token(new_token).await
+    }
+    pub async fn get_token(&self) -> Vec<u8> {
+        self.ctx.get_token().await
+    }
+    pub fn connection_info(&self) -> Arc<dyn ConnectionInfo> {
+        self.ctx.connection_info().clone()
+    }
+    pub fn context(&self) -> &Context {
+        &self.ctx
+    }
+    pub fn id(&self) -> u128 {
+        self.ctx.id
+    }
 }
 
 impl<T: Serialize + 'static> ContextWithSender<T> {
@@ -218,7 +269,7 @@ impl Context {
     }
 }
 
-type OnChannelMsg = Box<
+type OnChannelMsgNoRecv = Box<
     dyn Fn(
             Vec<u8>,
             UnboundedSender<Response>,
@@ -227,6 +278,22 @@ type OnChannelMsg = Box<
         + Send
         + Sync,
 >;
+
+type OnChannelMsgWithRecv = Box<
+    dyn Fn(
+            Vec<u8>,
+            UnboundedSender<Response>,
+            UnboundedReceiver<Vec<u8>>,
+            Context,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + Sync>>
+        + Send
+        + Sync,
+>;
+
+enum OnChannelMsg {
+    WithRecv(OnChannelMsgWithRecv),
+    NoRecv(OnChannelMsgNoRecv),
+}
 
 #[derive(Default)]
 pub struct Channels {
@@ -257,12 +324,13 @@ impl Channels {
         P: (Fn(RPCResult<R>, ContextWithSender<R::Return>) -> F) + 'static + Send + Sync,
     {
         let rpc_channel = R::rpc_channel();
+        reserved_check(rpc_channel);
         if self.channels.contains_key(&rpc_channel) {
             panic!("channel id conflict");
         }
         self.channels.insert(
             rpc_channel,
-            Box::new(
+            OnChannelMsg::NoRecv(Box::new(
                 move |bytes: Vec<u8>, sender: UnboundedSender<Response>, ctx: Context| {
                     let param = decode::<R>(&bytes);
                     let ctx_with_sender = ContextWithSender::<R::Return> {
@@ -285,7 +353,7 @@ impl Channels {
                         }
                     })
                 },
-            ),
+            )),
         );
         self
     }
@@ -296,12 +364,13 @@ impl Channels {
         P: (Fn(RPCResult<R>, Context) -> F) + 'static + Send + Sync,
     {
         let rpc_channel = R::rpc_channel();
+        reserved_check(rpc_channel);
         if self.channels.contains_key(&rpc_channel) {
             panic!("channel id conflict");
         }
         self.channels.insert(
             rpc_channel,
-            Box::new(
+            OnChannelMsg::NoRecv(Box::new(
                 move |bytes: Vec<u8>, sender: UnboundedSender<Response>, ctx: Context| {
                     let fut = decode::<R>(&bytes).map(|param| p(param, ctx));
                     Box::pin(async move {
@@ -314,7 +383,45 @@ impl Channels {
                         }
                     })
                 },
-            ),
+            )),
+        );
+        self
+    }
+    pub fn set_upload<R, F, P>(mut self, p: P) -> Self
+    where
+        R: Upload,
+        F: Future<Output = R::Return> + Send + Sync + 'static,
+        P: (Fn(RPCResult<R>, ContextWithUpload<R::UploadStream>) -> F) + 'static + Send + Sync,
+    {
+        let rpc_channel = R::rpc_channel();
+        reserved_check(rpc_channel);
+        if self.channels.contains_key(&rpc_channel) {
+            panic!("channel id conflict");
+        }
+        self.channels.insert(
+            rpc_channel,
+            OnChannelMsg::WithRecv(Box::new(
+                move |bytes: Vec<u8>,
+                      sender: UnboundedSender<Response>,
+                      recv: UnboundedReceiver<Vec<u8>>,
+                      ctx: Context| {
+                    let ctx = ContextWithUpload {
+                        recv,
+                        ctx,
+                        pd: PhantomData,
+                    };
+                    let fut = decode::<R>(&bytes).map(|param| p(param, ctx));
+                    Box::pin(async move {
+                        let msg = match fut {
+                            Ok(fut) => fut.await,
+                            Err(res) => res,
+                        };
+                        if let Err(e) = send(&sender, &msg) {
+                            error!("{:?}", e);
+                        }
+                    })
+                },
+            )),
         );
         self
     }
@@ -333,13 +440,16 @@ impl Channels {
         Arc::new(self)
     }
 
-    pub async fn on_message(
+    pub fn on_message(
         &self,
         msg: Message,
-        unbounded_channel: UnboundedSender<Response>,
+        sender: UnboundedSender<Response>,
         token: UnboundedSender<TokenCommand>,
         connection_info: Arc<dyn ConnectionInfo>,
         id: u128,
+    ) -> (
+        Option<UnboundedSender<Vec<u8>>>,
+        Option<impl Future<Output = ()>>,
     ) {
         let ctx = Context {
             connection_info,
@@ -347,9 +457,20 @@ impl Channels {
             id,
         };
         if let Some(f) = self.channels.get(&msg.channel_id) {
-            f(msg.msg, unbounded_channel, ctx).await;
+            match f {
+                OnChannelMsg::NoRecv(f) => {
+                    let fut = f(msg.msg, sender, ctx);
+                    (None, Some(fut))
+                }
+                OnChannelMsg::WithRecv(f) => {
+                    let (tx, rx) = unbounded_channel::<Vec<u8>>();
+                    let fut = f(msg.msg, sender, rx, ctx);
+                    (Some(tx), Some(fut))
+                }
+            }
         } else {
             error!("unknown channel id {}", msg.channel_id);
+            (None, None)
         }
     }
 
@@ -392,5 +513,11 @@ where
             count += 1u128;
             tokio::spawn(async move { on_stream(iostream, channels, id).await });
         }
+    }
+}
+
+fn reserved_check(rpc_channel: u32) {
+    if rpc_channel > (u32::max_value() - 100) {
+        panic!("reserved id");
     }
 }

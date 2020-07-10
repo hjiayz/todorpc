@@ -10,6 +10,7 @@ use std::marker::Unpin;
 use std::net::SocketAddr;
 use todorpc::*;
 use tokio::io::AsyncReadExt;
+use tokio::stream::Stream;
 use tokio::stream::StreamExt;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot::{channel, Sender};
@@ -100,7 +101,29 @@ impl QuicClient {
             return Ok(res);
         }
 
-        let mut recv = self.req(&param).await?;
+        let (_, mut recv) = self.req(&param).await?;
+        let result = read_result(&mut recv).await?;
+        let _ = recv.stop(VarInt::from_u32(0));
+        Ok(result)
+    }
+    pub async fn upload<R: Upload>(
+        &self,
+        param: R,
+        mut stream: impl Unpin + Stream<Item = R::UploadStream>,
+    ) -> Result<R::Return> {
+        if let Err(res) = param.verify() {
+            return Ok(res);
+        }
+        let (mut sender, mut recv) = self.req(&param).await?;
+        while let Some(item) = stream.next().await {
+            let bytes = bincode::serialize(&item).map_err(|_| Error::SerializeFaild)?;
+            if bytes.len() > u16::max_value() as usize {
+                return Err(Error::MessageTooBig);
+            }
+            let len_buf = (bytes.len() as u16).to_be_bytes();
+            sender.write_all(&len_buf).await.map_err(map_io_error)?;
+            sender.write_all(&bytes).await.map_err(map_io_error)?;
+        }
         let result = read_result(&mut recv).await?;
         let _ = recv.stop(VarInt::from_u32(0));
         Ok(result)
@@ -134,7 +157,7 @@ impl QuicClient {
             let _ = tx.send(Ok(res));
             return Ok(rx);
         }
-        let mut recv = self.req(&param).await?;
+        let (_, mut recv) = self.req(&param).await?;
         let client = self.clone();
         tokio::spawn(async move {
             while let Ok(new_recv) = try_read(recv, &tx, &client, &param).await {
@@ -143,13 +166,13 @@ impl QuicClient {
         });
         Ok(rx)
     }
-    async fn req<R: RPC>(&self, param: &R) -> Result<RecvStream> {
+    async fn req<R: RPC>(&self, param: &R) -> Result<(SendStream, RecvStream)> {
         let (tx, rx) = channel();
         self.tx.send(tx).map_err(|_| Error::ConnectionDroped)?;
         let (mut send, recv) = rx.await.map_err(|_| Error::ConnectionDroped)?;
 
         send_param(param, &mut send).await?;
-        Ok(recv)
+        Ok((send, recv))
     }
     async fn re_req<R: RPC>(&self, param: &R) -> Result<RecvStream> {
         let (tx, rx) = channel();

@@ -108,9 +108,26 @@ async fn handle_request(
             }
         }
     });
-    channels
-        .on_message(msg, tx, token, connection_info, id)
-        .await;
+    let (upload_tx, fut) = channels.on_message(msg, tx, token, connection_info, id);
+    if let Some(fut) = fut {
+        tokio::spawn(fut);
+    }
+    if let Some(upload_tx) = upload_tx {
+        loop {
+            let mut buf = [0u8; 2];
+            recv.read_exact(&mut buf).await?;
+            let len = u16::from_be_bytes(buf) as usize;
+            let mut msg = Vec::with_capacity(len);
+            unsafe {
+                msg.set_len(len);
+            };
+            recv.read_exact(&mut msg).await?;
+            if let Err(e) = upload_tx.send(msg) {
+                error!("{:?}", e);
+                break;
+            }
+        }
+    }
 
     Ok(())
 }

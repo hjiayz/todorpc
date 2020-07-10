@@ -1,27 +1,41 @@
 use futures::channel::{mpsc, oneshot};
-use futures::stream::StreamExt;
+use futures::stream::{Stream, StreamExt};
 use js_sys::Uint8Array;
 use log::{debug, error, trace};
 use std::collections::BTreeMap;
 use std::rc::Rc;
-use todorpc::{Call, Error as RPCError, Result as RPCResult, Subscribe};
+use todorpc::{Call, Error as RPCError, Result as RPCResult, Subscribe, Upload};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{window, BinaryType, CloseEvent, EventTarget, MessageEvent, WebSocket};
 
-struct Req {
-    sender: mpsc::UnboundedSender<RPCResult<Vec<u8>>>,
-    is_call: bool,
-    channel_id: u32,
-    data: Vec<u8>,
-}
 struct Recv {
     msg_id: u32,
     data: RPCResult<Vec<u8>>,
 }
 
 struct Timeout {
+    timeout_id: u128,
+}
+
+struct Req {
+    sender: mpsc::UnboundedSender<RPCResult<Vec<u8>>>,
+    channel_id: u32,
+    data: Vec<u8>,
+}
+
+struct ReqNoCall {
+    sender: mpsc::UnboundedSender<RPCResult<Vec<u8>>>,
+    on_send: Option<oneshot::Sender<()>>,
+    msg_id_sender: oneshot::Sender<u32>,
+    channel_id: u32,
+    data: Vec<u8>,
+}
+
+struct Uploading {
+    upload_ok_tx: oneshot::Sender<()>,
+    data: Vec<u8>,
     msg_id: u32,
 }
 
@@ -31,6 +45,9 @@ enum Op {
     Recv(Recv),
     Timeout(Timeout),
     Opened,
+    Uploading(Uploading),
+    ReqNoCall(ReqNoCall),
+    EndNoCall(u32),
 }
 
 async fn wait_for(timeout: i32) {
@@ -54,6 +71,15 @@ impl Drop for Ws {
         self.ws.set_onmessage(None);
         self.ws.set_onclose(None);
     }
+}
+
+fn timeout_checker(id: u128, tx: mpsc::UnboundedSender<Op>, timeout: i32) -> u128 {
+    let new_id = id + 1;
+    spawn_local(async move {
+        wait_for(timeout).await;
+        let _ = tx.unbounded_send(Op::Timeout(Timeout { timeout_id: new_id }));
+    });
+    new_id
 }
 
 struct Ws {
@@ -125,6 +151,7 @@ async fn connect(url: String, timeout: i32) -> mpsc::UnboundedSender<Op> {
         let mut id: u32 = 0;
         let mut events = BTreeMap::<u32, (mpsc::UnboundedSender<RPCResult<Vec<u8>>>, bool)>::new();
         let mut never_open = true;
+        let mut timeout_id = 0u128;
         let mut ws = ws_init(&url, tx_ref.clone(), timeout).await;
 
         while let Some(op) = rx.next().await {
@@ -154,11 +181,11 @@ async fn connect(url: String, timeout: i32) -> mpsc::UnboundedSender<Op> {
                         let _ = events.remove(&recv.msg_id);
                     }
                     trace!("recv {}", recv.msg_id);
+                    timeout_id = timeout_checker(timeout_id, tx_ref.clone(), timeout);
                 }
                 Op::Timeout(timeout) => {
-                    if let Some(event) = events.remove(&timeout.msg_id) {
-                        trace!("timeout {}", timeout.msg_id);
-                        let _ = event.0.unbounded_send(Err(RPCError::Timeout));
+                    if timeout_id == timeout.timeout_id {
+                        let _ = tx_ref.unbounded_send(Op::Deconnect);
                     }
                 }
                 Op::Req(req) => {
@@ -170,19 +197,14 @@ async fn connect(url: String, timeout: i32) -> mpsc::UnboundedSender<Op> {
                         continue;
                     };
                     id += 1;
-                    if req.is_call {
-                        spawn_local(async move {
-                            wait_for(timeout).await;
-                            let _ = tx_ref.unbounded_send(Op::Timeout(Timeout { msg_id: id }));
-                        });
-                    }
-                    let _ = events.insert(id, (req.sender, req.is_call));
-                    if let Err(e) = send(req.channel_id, id, req.data, &ws.ws) {
+                    let _ = events.insert(id, (req.sender, true));
+                    if let Err(e) = send(req.channel_id, id, req.data, &ws.ws, None) {
                         debug!("{:?}", e);
                         if let Some(event) = events.remove(&id) {
                             let _ = event.0.unbounded_send(Err(e));
                         }
                     }
+                    timeout_id = timeout_checker(timeout_id, tx_ref.clone(), timeout);
                 }
                 Op::Opened => {
                     if never_open {
@@ -190,6 +212,54 @@ async fn connect(url: String, timeout: i32) -> mpsc::UnboundedSender<Op> {
                         let _ = open_tx.unbounded_send(());
                     }
                     never_open = false;
+                    timeout_id = timeout_checker(timeout_id, tx_ref.clone(), timeout);
+                }
+                Op::ReqNoCall(req) => {
+                    trace!("request {}", id);
+                    if id == u32::max_value() {
+                        ws.ws.close().unwrap();
+                        trace!("message id overflow");
+                        let _ = req.sender.unbounded_send(Err(RPCError::ConnectionReset));
+                        continue;
+                    };
+                    id += 1;
+                    if let Err(_) = req.msg_id_sender.send(id) {
+                        trace!("requester droped");
+                        continue;
+                    }
+                    match send(req.channel_id, id, req.data, &ws.ws, req.on_send) {
+                        Ok(_data) => {
+                            let _ = events.insert(id, (req.sender, false));
+                        }
+                        Err(e) => {
+                            if req.sender.unbounded_send(Err(e)).is_err() {
+                                trace!("requester droped");
+                            }
+                            continue;
+                        }
+                    }
+                    timeout_id = timeout_checker(timeout_id, tx_ref.clone(), timeout);
+                }
+                Op::Uploading(uploading) => {
+                    match send(
+                        u32::max_value(),
+                        uploading.msg_id,
+                        uploading.data,
+                        &ws.ws,
+                        Some(uploading.upload_ok_tx),
+                    ) {
+                        Ok(_data) => {}
+                        Err(e) => {
+                            debug!("{:?}", e);
+                            continue;
+                        }
+                    }
+                    timeout_id = timeout_checker(timeout_id, tx_ref.clone(), timeout);
+                }
+                Op::EndNoCall(msg_id) => {
+                    if let None = events.remove(&msg_id) {
+                        debug!("no message id : {}", msg_id);
+                    }
                 }
             }
         }
@@ -221,7 +291,6 @@ impl WSRpc {
         self.tx
             .unbounded_send(Op::Req(Req {
                 sender: tx,
-                is_call: true,
                 channel_id: C::rpc_channel(),
                 data,
             }))
@@ -246,7 +315,7 @@ impl WSRpc {
         };
         let this = self.clone();
         let param = Rc::new(param);
-        let mut rx = self.subscribe_inner(param.clone().as_ref())?;
+        let (mut rx, mut msg_id_rx) = self.subscribe_inner(param.clone().as_ref())?;
         spawn_local(async move {
             loop {
                 if let Some(msg) = rx.next().await {
@@ -254,6 +323,9 @@ impl WSRpc {
                         Err(e) => {
                             if let Err(_) = res_tx.unbounded_send(Err(e.clone())) {
                                 trace!("subscribe {} stop", R::rpc_channel());
+                                if let Ok(msg_id) = msg_id_rx.await {
+                                    let _ = this.tx.unbounded_send(Op::EndNoCall(msg_id));
+                                }
                                 break;
                             }
                         }
@@ -273,8 +345,9 @@ impl WSRpc {
                 wait_for(this.timeout).await;
                 loop {
                     trace!("try subscribe {} again", R::rpc_channel());
-                    if let Ok(new_rx) = this.subscribe_inner(param.as_ref()) {
+                    if let Ok((new_rx, new_msg_id_rx)) = this.subscribe_inner(param.as_ref()) {
                         rx = new_rx;
+                        msg_id_rx = new_msg_id_rx;
                         break;
                     }
                     wait_for(this.timeout).await;
@@ -286,25 +359,103 @@ impl WSRpc {
     fn subscribe_inner<R: Subscribe>(
         &self,
         param: &R,
-    ) -> RPCResult<mpsc::UnboundedReceiver<RPCResult<Vec<u8>>>> {
+    ) -> RPCResult<(
+        mpsc::UnboundedReceiver<RPCResult<Vec<u8>>>,
+        oneshot::Receiver<u32>,
+    )> {
         let (tx, rx) = mpsc::unbounded::<RPCResult<Vec<u8>>>();
         let data = bincode::serialize(param).map_err(|e| {
             debug!("{}", e);
             RPCError::SerializeFaild
         })?;
+        let (msg_id_sender, msg_id_rx) = oneshot::channel();
         self.tx
-            .unbounded_send(Op::Req(Req {
+            .unbounded_send(Op::ReqNoCall(ReqNoCall {
                 sender: tx,
-                is_call: false,
+                msg_id_sender,
+                on_send: None,
                 channel_id: R::rpc_channel(),
                 data,
             }))
             .map_err(|_| RPCError::ConnectionDroped)?;
-        Ok(rx)
+        Ok((rx, msg_id_rx))
+    }
+    pub async fn upload<R: Upload>(
+        &self,
+        param: R,
+        stream: impl Unpin + Stream<Item = R::UploadStream>,
+    ) -> RPCResult<R::Return> {
+        if let Err(res) = param.verify() {
+            return Ok(res);
+        }
+        let (tx, mut rx) = mpsc::unbounded::<RPCResult<Vec<u8>>>();
+        let data = bincode::serialize(&param).map_err(|e| {
+            debug!("{}", e);
+            RPCError::SerializeFaild
+        })?;
+        let (msg_id_sender, msg_id_rx) = oneshot::channel();
+        let (on_send_tx, on_send_rx) = oneshot::channel();
+        self.tx
+            .unbounded_send(Op::ReqNoCall(ReqNoCall {
+                sender: tx,
+                msg_id_sender,
+                on_send: Some(on_send_tx),
+                channel_id: R::rpc_channel(),
+                data,
+            }))
+            .map_err(|_| RPCError::ConnectionDroped)?;
+        let msg_id = msg_id_rx.await.map_err(|e| {
+            debug!("{:?}", e);
+            RPCError::ConnectionReset
+        })?;
+        let _ = on_send_rx.await.map_err(|e| {
+            debug!("{:?}", e);
+            RPCError::ConnectionReset
+        })?;
+        let stream = stream.map(|item| {
+            bincode::serialize(&item).map_err(|e| {
+                debug!("{}", e);
+                RPCError::SerializeFaild
+            })
+        });
+        self.upload_inner(msg_id, stream).await?;
+        if let Some(msg) = rx.next().await {
+            let result = bincode::deserialize(&msg?).map_err(|e| {
+                debug!("{}", e);
+                RPCError::DeserializeFaild
+            })?;
+            return Ok(result);
+        };
+        Err(RPCError::ConnectionReset)
+    }
+    async fn upload_inner(
+        &self,
+        msg_id: u32,
+        mut stream: impl Unpin + Stream<Item = RPCResult<Vec<u8>>>,
+    ) -> RPCResult<()> {
+        while let Some(data) = stream.next().await {
+            let data = data?;
+            let (upload_ok_tx, upload_ok_rx) = oneshot::channel();
+            self.tx
+                .unbounded_send(Op::Uploading(Uploading {
+                    upload_ok_tx,
+                    data: data,
+                    msg_id,
+                }))
+                .map_err(|_| RPCError::ConnectionReset)?;
+            upload_ok_rx.await.map_err(|_| RPCError::ConnectionReset)?;
+        }
+        Ok(())
     }
 }
 
-fn send(channel_id: u32, msg_id: u32, data: Vec<u8>, ws: &WebSocket) -> RPCResult<Vec<u8>> {
+fn send(
+    channel_id: u32,
+    msg_id: u32,
+    data: Vec<u8>,
+    ws: &WebSocket,
+    on_ok: Option<oneshot::Sender<()>>,
+) -> RPCResult<()> {
     if data.len() > u16::max_value() as usize {
         return Err(RPCError::MessageTooBig);
     }
@@ -318,11 +469,23 @@ fn send(channel_id: u32, msg_id: u32, data: Vec<u8>, ws: &WebSocket) -> RPCResul
         .cloned()
         .chain(data.into_iter())
         .collect();
-    ws.send_with_u8_array(&bytes).map_err(|e| {
-        debug!("{:?}", e);
-        RPCError::TransportError
-    })?;
-    Ok(bytes)
+    let ws = ws.clone();
+    spawn_local(async move {
+        loop {
+            if ws.buffered_amount() > 0 {
+                break;
+            }
+            wait_for(50).await;
+        }
+        let _ = ws.send_with_u8_array(&bytes).map_err(|e| {
+            debug!("{:?}", e);
+            RPCError::TransportError
+        });
+        if let Some(sender) = on_ok {
+            let _ = sender.send(());
+        }
+    });
+    Ok(())
 }
 
 fn read_msg(n: &mut [u8]) -> RPCResult<(&mut [u8], u32)> {

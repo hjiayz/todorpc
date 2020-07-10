@@ -36,6 +36,10 @@ pub trait Call: RPC + Verify {}
 
 pub trait Subscribe: RPC + Verify {}
 
+pub trait Upload: RPC + Verify {
+    type UploadStream: DeserializeOwned + Serialize + 'static + Send + Sync;
+}
+
 #[derive(Debug)]
 pub struct Message {
     pub channel_id: u32,
