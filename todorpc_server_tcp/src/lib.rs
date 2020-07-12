@@ -2,7 +2,9 @@ use futures::stream::{Stream, StreamExt};
 use log::error;
 use std::pin::Pin;
 use std::sync::Arc;
-pub use todorpc_server_core::{Channels, ConnectionInfo, Context, ContextWithSender};
+pub use todorpc_server_core::{
+    Channels, ConnectionInfo, Context, ContextWithSender, ContextWithUpload,
+};
 use todorpc_server_core::{IoStream, Server};
 use tokio::io::{ReadHalf, Result as TIoResult, WriteHalf};
 use tokio::net::{TcpListener, TcpStream as TokioTcpStream};

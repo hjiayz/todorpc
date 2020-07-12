@@ -220,7 +220,11 @@ impl TcpClient {
             loop {
                 let ops_tx_ref2 = ops_tx_ref.clone();
                 if let Ok(stream) = TcpStream::connect(addr).await {
-                    let stream: TcpStream = stream;
+                    if let Err(e) = stream.set_nodelay(true) {
+                        debug!("{}", e);
+                        delay_for(retry2).await;
+                        continue;
+                    }
                     let (mut read, mut write) = stream.into_split();
                     tokio::spawn(async move {
                         while let Ok((msg, id)) = read_msg_async(&mut read).await {
@@ -272,22 +276,21 @@ impl TcpClient {
         if let Err(res) = param.verify() {
             return Ok(res);
         }
-        let (mut sender_rx, msg_id) = self.req_no_call(&param).await?;
+        let (sender_rx, msg_id) = self.req_no_call(&param).await?;
         let stream = stream.map(|item| {
             bincode::serialize(&item).map_err(|e| {
                 debug!("{}", e);
                 Error::SerializeFaild
             })
         });
-        self.upload_inner(msg_id, stream).await?;
-        if let Some(msg) = sender_rx.next().await {
-            let result = bincode::deserialize(&msg?).map_err(|e| {
-                debug!("{}", e);
-                Error::DeserializeFaild
-            })?;
-            return Ok(result);
-        };
-        Err(Error::ConnectionReset)
+        self.upload_inner(msg_id, stream, sender_rx)
+            .await
+            .and_then(|msg| {
+                bincode::deserialize(&msg?).map_err(|e| {
+                    debug!("{}", e);
+                    Error::DeserializeFaild
+                })
+            })
     }
     pub async fn subscribe<R: Subscribe>(
         &self,
@@ -393,8 +396,15 @@ impl TcpClient {
         &self,
         msg_id: u32,
         mut stream: impl Unpin + Stream<Item = Result<Vec<u8>>>,
-    ) -> Result<()> {
+        mut sender_rx: UnboundedReceiver<Result<Vec<u8>>>,
+    ) -> Result<Result<Vec<u8>>> {
+        use tokio::sync::mpsc::error::TryRecvError::Closed;
         while let Some(data) = stream.next().await {
+            match sender_rx.try_recv() {
+                Ok(result) => return Ok(result),
+                Err(Closed) => return Err(Error::ConnectionReset),
+                _ => (),
+            }
             let data = data?;
             let (upload_ok_tx, upload_ok_rx) = oneshot::channel();
             self.ops
@@ -406,7 +416,19 @@ impl TcpClient {
                 .map_err(|_| Error::ConnectionReset)?;
             upload_ok_rx.await.map_err(|_| Error::ConnectionReset)?;
         }
-        Ok(())
+        let (upload_ok_tx, upload_ok_rx) = oneshot::channel();
+        self.ops
+            .send(Op::Uploading(Uploading {
+                upload_ok_tx,
+                data: vec![],
+                msg_id,
+            }))
+            .map_err(|_| Error::ConnectionReset)?;
+        upload_ok_rx.await.map_err(|_| Error::ConnectionReset)?;
+        if let Some(msg) = sender_rx.next().await {
+            return Ok(msg);
+        };
+        Err(Error::ConnectionReset)
     }
     fn end_req(&self, msg_id: u32) {
         if let Err(_) = self.ops.send(Op::EndNoCall(msg_id)) {

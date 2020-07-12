@@ -1,9 +1,10 @@
 use define::*;
+use futures::channel::mpsc;
 use futures::stream::StreamExt;
-use js_sys::{Error, Function, Promise};
+use js_sys::{AsyncIterator, Error, Function, Object, Promise};
 use todorpc_web::WSRpc;
 use wasm_bindgen::prelude::*;
-use wasm_bindgen_futures::{future_to_promise, spawn_local};
+use wasm_bindgen_futures::{future_to_promise, spawn_local, JsFuture};
 
 #[wasm_bindgen]
 extern "C" {
@@ -97,4 +98,38 @@ pub fn subscribe_bar(cb: Function, is_tls: bool) {
             .unwrap();
         }
     });
+}
+
+async fn async_upload_sample(stream: AsyncIterator, is_tls: bool) -> Result<JsValue, JsValue> {
+    let con = unsafe {
+        if is_tls {
+            TLSCONN.as_ref().unwrap()
+        } else {
+            CONN.as_ref().unwrap()
+        }
+    };
+    let (tx, rx) = mpsc::unbounded();
+    spawn_local(async move {
+        while let Ok(promise) = stream.next() {
+            if let Ok(s) = JsFuture::from(promise).await {
+                let obj = Object::from(s);
+                let values = Object::values(&obj);
+                let done = values.get(1).as_bool().unwrap();
+                if done {
+                    break;
+                }
+                let value = values.get(0).as_string().unwrap();
+                let _ = tx.unbounded_send(value);
+            }
+        }
+    });
+    con.upload(UploadSample, rx)
+        .await
+        .map(|_| JsValue::UNDEFINED)
+        .map_err(|e| JsValue::from(format!("{:?}", e)))
+}
+
+#[wasm_bindgen]
+pub fn upload_sample(stream: AsyncIterator, is_tls: bool) -> Promise {
+    future_to_promise(async_upload_sample(stream, is_tls))
 }

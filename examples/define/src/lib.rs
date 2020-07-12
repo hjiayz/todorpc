@@ -20,3 +20,17 @@ pub struct Bar;
 
 impl Verify for Bar {}
 subs!( Bar[2] -> (String, u32) );
+
+#[derive(Deserialize, Serialize)]
+pub struct UploadSample;
+
+impl Verify for UploadSample {}
+impl RPC for UploadSample {
+    type Return = ();
+    fn rpc_channel() -> u32 {
+        3
+    }
+}
+impl Upload for UploadSample {
+    type UploadStream = String;
+}

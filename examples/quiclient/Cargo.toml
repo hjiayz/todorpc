@@ -9,7 +9,7 @@ edition = "2018"
 [dependencies]
 todorpc_client_quic = { path = './../../todorpc_client_quic' }
 todorpc = { path = './../../todorpc' }
-serde = { version = "1.0.111", features = ["derive"] }
+serde = { version = "1.0.114", features = ["derive"] }
 lazy_static = "1.4.0"
 define = { path = "../define"}
 tokio = { version = "0.2.21", features = ["fs","io-util","sync","stream","rt-core","macros","time"] }

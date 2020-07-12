@@ -8,6 +8,7 @@ use todorpc_server_tcp::TcpRPCServer;
 use todorpc_server_websocket::*;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
+use tokio::stream::StreamExt;
 
 async fn foo(res: Result<Foo>, _ctx: Context) -> u32 {
     match res {
@@ -28,6 +29,15 @@ async fn bar(res: Result<Bar>, ctx: ContextWithSender<(String, u32)>) {
             break;
         };
     }
+}
+
+async fn upload_sample(res: Result<UploadSample>, ctx: ContextWithUpload<String>) {
+    res.unwrap();
+    let mut stream = ctx.into_stream();
+    while let Some(s) = stream.next().await {
+        println!("{}", s.unwrap());
+    }
+    println!("upload sample finished");
 }
 
 async fn listen_quic(chan: Arc<Channels>, identity: &[u8]) {
@@ -86,7 +96,7 @@ async fn listen_wsrpc(chan: Arc<Channels>) {
 #[tokio::main]
 async fn main() {
     formatted_builder()
-        .filter_level(log::LevelFilter::Trace)
+        .filter_level(log::LevelFilter::Debug)
         .init();
     let mut file = File::open("localhost.p12").await.unwrap();
     let mut identity = vec![];
@@ -97,6 +107,7 @@ async fn main() {
     let mut chan = Channels::new();
     chan = chan.set_call(foo);
     chan = chan.set_subscribe(bar);
+    chan = chan.set_upload(upload_sample);
     let chan = chan.finish();
 
     let chan_cloned = chan.clone();

@@ -10,6 +10,7 @@ use std::marker::Unpin;
 use std::net::SocketAddr;
 use todorpc::*;
 use tokio::io::AsyncReadExt;
+use tokio::io::AsyncWriteExt;
 use tokio::stream::Stream;
 use tokio::stream::StreamExt;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
@@ -32,7 +33,7 @@ async fn send_param<S: RPC>(param: &S, sender: &mut SendStream) -> Result<()> {
     sender.write_all(&len_buf).await.map_err(map_io_error)?;
     sender.write_all(&channel_buf).await.map_err(map_io_error)?;
     sender.write_all(&ser).await.map_err(map_io_error)?;
-    //sender.finish().await.map_err(map_io_error)?;
+    sender.flush().await.map_err(map_io_error)?;
     Ok(())
 }
 
@@ -68,7 +69,7 @@ impl QuicClient {
         })?;
         let timeout = Duration::from_millis(timeout as u64);
         let info = ConnectInfo {
-            timeout: timeout.clone(),
+            timeout: timeout,
             addr: remote_addr,
             hostname: hostname.into(),
             ep: endpoint,
@@ -87,7 +88,7 @@ impl QuicClient {
                             continue;
                         }
                     };
-                    if let Err(_) = stream_tx.send(stream) {
+                    if stream_tx.send(stream).is_err() {
                         debug!("connect request channel closed");
                     }
                     break;
@@ -123,7 +124,14 @@ impl QuicClient {
             let len_buf = (bytes.len() as u16).to_be_bytes();
             sender.write_all(&len_buf).await.map_err(map_io_error)?;
             sender.write_all(&bytes).await.map_err(map_io_error)?;
+            sender.flush().await.map_err(map_io_error)?;
         }
+        let end_pack_buf = (0 as u16).to_be_bytes();
+        sender
+            .write_all(&end_pack_buf)
+            .await
+            .map_err(map_io_error)?;
+        sender.flush().await.map_err(map_io_error)?;
         let result = read_result(&mut recv).await?;
         let _ = recv.stop(VarInt::from_u32(0));
         Ok(result)
@@ -195,7 +203,12 @@ pub struct ConnectInfo {
 
 impl ConnectInfo {
     async fn try_connect(&self) -> Result<Connection> {
-        let socket = std::net::UdpSocket::bind("[::]:0").map_err(|e| {
+        //todo maybe fix ipv6 and ipv4
+        let local_addr = match self.addr {
+            SocketAddr::V4(_) => "0.0.0.0:0",
+            SocketAddr::V6(_) => "[::]:0",
+        };
+        let socket = std::net::UdpSocket::bind(local_addr).map_err(|e| {
             debug!("{}", e);
             Error::ConnectionFailed
         })?;

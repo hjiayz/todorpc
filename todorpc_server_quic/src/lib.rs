@@ -10,7 +10,7 @@ use std::mem::transmute;
 use std::sync::Arc;
 use todorpc::{Message, Response};
 pub use todorpc_server_core::{
-    token, Channels, ConnectionInfo, Context, ContextWithSender, TokenCommand,
+    token, Channels, ConnectionInfo, Context, ContextWithSender, ContextWithUpload, TokenCommand,
 };
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
@@ -117,6 +117,9 @@ async fn handle_request(
             let mut buf = [0u8; 2];
             recv.read_exact(&mut buf).await?;
             let len = u16::from_be_bytes(buf) as usize;
+            if len == 0 {
+                break;
+            }
             let mut msg = Vec::with_capacity(len);
             unsafe {
                 msg.set_len(len);

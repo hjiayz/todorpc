@@ -1,87 +1,115 @@
 <html>
-  <head>
-    <meta content="text/html;charset=utf-8" http-equiv="Content-Type" />
-  </head>
 
-  <body>
-    <ul>
-      <li>call foo</li>
-      <li id="call_foo"></li>
-      <li>subscribe bar</li>
-      <li id="subscribe_bar"></li>
-      <li>call foo tls</li>
-      <li id="call_foo_tls"></li>
-      <li>subscribe bar tls</li>
-      <li id="subscribe_bar_tls"></li>
-    </ul>
-    <script type="module">
-      import init, {
-        call_foo,
-        connect_ws,
-        connect_wss,
-        subscribe_bar,
-      } from "./pkg/wsclient.js";
-      function wait() {
-        return new Promise((res) => setTimeout(res, 1000));
-      }
-      async function run() {
-        await init();
-        console.log("init finished");
-        await connect_ws();
-        console.log("connect websocket finished");
-        await connect_wss();
-        console.log("connect websocket tls finished");
-        function bar() {
-          subscribe_bar((val) => {
-            if (val instanceof Error) {
-              console.error("subscribe_bar", val);
-            } else {
-              document.getElementById("subscribe_bar").innerText = val;
-            }
-          }, false);
-        }
-        async function foo() {
-          let i = 0;
-          while (true) {
-            try {
-              document.getElementById("call_foo").innerText = await call_foo(
-                i++,
-                true
-              );
-            } catch (e) {
-              console.error("foo:", e);
-            }
-            await wait();
+<head>
+  <meta content="text/html;charset=utf-8" http-equiv="Content-Type" />
+</head>
+
+<body>
+  <ul>
+    <li>call foo</li>
+    <li id="call_foo"></li>
+    <li>subscribe bar</li>
+    <li id="subscribe_bar"></li>
+    <li>upload sample</li>
+    <li id="upload_sample"></li>
+    <li>call foo tls</li>
+    <li id="call_foo_tls"></li>
+    <li>subscribe bar tls</li>
+    <li id="subscribe_bar_tls"></li>
+    <li>upload sample tls</li>
+    <li id="upload_sample_tls"></li>
+  </ul>
+  <script type="module">
+    import init, {
+      call_foo,
+      connect_ws,
+      connect_wss,
+      subscribe_bar,
+      upload_sample,
+    } from "./pkg/wsclient.js";
+    function wait() {
+      return new Promise((res) => setTimeout(res, 1000));
+    }
+    async function run() {
+      await init();
+      console.log("init finished");
+      await connect_ws();
+      console.log("connect websocket finished");
+      await connect_wss();
+      console.log("connect websocket tls finished");
+      function bar() {
+        subscribe_bar((val) => {
+          if (val instanceof Error) {
+            console.error("subscribe_bar", val);
+          } else {
+            document.getElementById("subscribe_bar").innerText = val;
           }
-        }
-        function bar_tls() {
-          subscribe_bar((val) => {
-            if (val instanceof Error) {
-              console.error("subscribe_bar_tls", val);
-            } else {
-              document.getElementById("subscribe_bar_tls").innerText = val;
-            }
-          }, true);
-        }
-        async function foo_tls() {
-          let i = 0;
-          while (true) {
-            try {
-              document.getElementById(
-                "call_foo_tls"
-              ).innerText = await call_foo(i++, true);
-            } catch (e) {
-              console.error("foo tls:", e);
-            }
-            await wait();
-          }
-        }
-        bar_tls();
-        bar();
-        foo_tls();
-        foo();
+        }, false);
       }
-      run();
-    </script>
-  </body>
+      async function foo() {
+        let i = 0;
+        while (true) {
+          try {
+            document.getElementById("call_foo").innerText = await call_foo(
+              i++,
+              true
+            );
+          } catch (e) {
+            console.error("foo:", e);
+          }
+          await wait();
+        }
+      }
+      function bar_tls() {
+        subscribe_bar((val) => {
+          if (val instanceof Error) {
+            console.error("subscribe_bar_tls", val);
+          } else {
+            document.getElementById("subscribe_bar_tls").innerText = val;
+          }
+        }, true);
+      }
+      async function foo_tls() {
+        let i = 0;
+        while (true) {
+          try {
+            document.getElementById(
+              "call_foo_tls"
+            ).innerText = await call_foo(i++, true);
+          } catch (e) {
+            console.error("foo tls:", e);
+          }
+          await wait();
+        }
+      }
+      async function* upload_stream(id) {
+        let i = 0;
+        while (i<10) {
+          let s = "hi " + i;
+          document.getElementById(id).innerText = s;
+          yield s;
+          await wait();
+          i++;
+        }
+      }
+      function upload_end(id){
+        return ()=>document.getElementById(id).innerText = "end";
+      }
+      function upload() {
+        upload_sample(upload_stream("upload_sample"), false).then(upload_end("upload_sample"));
+      }
+      function upload_tls() {
+        upload_sample(upload_stream("upload_sample_tls"), true).then(upload_end("upload_sample_tls"));
+      }
+      bar_tls();
+      bar();
+      foo_tls();
+      foo();
+      upload();
+      upload_tls();
+    }
+    run();
+  </script>
+</body>
+
 </html>

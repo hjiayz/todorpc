@@ -9,4 +9,4 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 todorpc = { path = '../../todorpc' }
-serde = "1.0.111"
+serde = "1.0.114"

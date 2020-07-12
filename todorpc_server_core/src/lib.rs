@@ -1,8 +1,7 @@
 use bincode::{deserialize, serialize};
-use log::{debug, error, warn};
+use log::{debug, error, trace, warn};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use std::any::TypeId;
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::marker::PhantomData;
@@ -123,12 +122,13 @@ pub async fn on_stream<S: IoStream>(iostream: S, channels: Arc<Channels>, id: u1
         let is_upload_msg = msg.channel_id == u32::max_value();
         if is_upload_msg {
             if let Some(upload_tx) = upload_list.get(&msg_id) {
-                if msg.msg.len() > 0 {
+                if !msg.msg.is_empty() {
                     if let Err(e) = upload_tx.send(msg.msg) {
                         debug!("{}", e);
                     }
                 } else {
                     upload_list.remove(&msg_id);
+                    trace!("msg {} removed", msg_id);
                 }
                 continue;
             }
@@ -178,9 +178,6 @@ impl<T> Clone for ContextWithSender<T> {
 }
 
 fn send<T: Serialize + 'static>(sender: &UnboundedSender<Response>, msg: &T) -> RPCResult<()> {
-    if TypeId::of::<T>() == TypeId::of::<()>() {
-        return Ok(());
-    }
     let msg = serialize(msg).map_err(|e| {
         debug!("{}", e);
         Error::SerializeFaild
@@ -290,6 +287,9 @@ type OnChannelMsgWithRecv = Box<
         + Sync,
 >;
 
+type OnClose =
+    Box<dyn Send + Sync + Fn(Context) -> Pin<Box<dyn Future<Output = ()> + Send + Sync>>>;
+
 enum OnChannelMsg {
     WithRecv(OnChannelMsgWithRecv),
     NoRecv(OnChannelMsgNoRecv),
@@ -298,14 +298,12 @@ enum OnChannelMsg {
 #[derive(Default)]
 pub struct Channels {
     channels: BTreeMap<u32, OnChannelMsg>,
-    on_close: Option<
-        Box<dyn Send + Sync + Fn(Context) -> Pin<Box<dyn Future<Output = ()> + Send + Sync>>>,
-    >,
+    on_close: Option<OnClose>,
 }
 
 fn decode<R: RPC + Verify>(bytes: &[u8]) -> Result<RPCResult<R>, R::Return> {
     match deserialize::<R>(bytes) {
-        Ok(r) => r.verify_result().map(|res| Ok(res)),
+        Ok(r) => r.verify_result().map(Ok),
         Err(e) => {
             debug!("{}", e);
             Ok(Err(Error::DeserializeFaild))
@@ -324,6 +322,7 @@ impl Channels {
         P: (Fn(RPCResult<R>, ContextWithSender<R::Return>) -> F) + 'static + Send + Sync,
     {
         let rpc_channel = R::rpc_channel();
+        #[cfg(debug)]
         reserved_check(rpc_channel);
         if self.channels.contains_key(&rpc_channel) {
             panic!("channel id conflict");
@@ -364,6 +363,7 @@ impl Channels {
         P: (Fn(RPCResult<R>, Context) -> F) + 'static + Send + Sync,
     {
         let rpc_channel = R::rpc_channel();
+        #[cfg(debug)]
         reserved_check(rpc_channel);
         if self.channels.contains_key(&rpc_channel) {
             panic!("channel id conflict");
@@ -394,8 +394,9 @@ impl Channels {
         P: (Fn(RPCResult<R>, ContextWithUpload<R::UploadStream>) -> F) + 'static + Send + Sync,
     {
         let rpc_channel = R::rpc_channel();
+        #[cfg(debug)]
         reserved_check(rpc_channel);
-        if self.channels.contains_key(&rpc_channel) {
+        if cfg!(debug) && self.channels.contains_key(&rpc_channel) {
             panic!("channel id conflict");
         }
         self.channels.insert(
@@ -516,6 +517,7 @@ where
     }
 }
 
+#[cfg(debug)]
 fn reserved_check(rpc_channel: u32) {
     if rpc_channel > (u32::max_value() - 100) {
         panic!("reserved id");
