@@ -31,11 +31,18 @@ async fn bar(res: Result<Bar>, ctx: ContextWithSender<(String, u32)>) {
     }
 }
 
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering::SeqCst;
+
+static UPLOAD_ID: AtomicU64 = AtomicU64::new(0);
+
 async fn upload_sample(res: Result<UploadSample>, ctx: ContextWithUpload<String>) {
+    let id = UPLOAD_ID.fetch_add(1, SeqCst);
     res.unwrap();
+    let remote_address = &ctx.connection_info().remote_address();
     let mut stream = ctx.into_stream();
     while let Some(s) = stream.next().await {
-        println!("{}", s.unwrap());
+        println!("{} {} : {}", remote_address, id, s.unwrap());
     }
     println!("upload sample finished");
 }
@@ -98,7 +105,10 @@ async fn main() {
     formatted_builder()
         .filter_level(log::LevelFilter::Debug)
         .init();
-    let mut file = File::open("localhost.p12").await.unwrap();
+    let mut file = File::open("localhost.p12")
+        .await
+        .or(File::open("./examples/server/localhost.p12").await)
+        .unwrap();
     let mut identity = vec![];
     file.read_to_end(&mut identity).await.unwrap();
 

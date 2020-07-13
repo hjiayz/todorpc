@@ -459,30 +459,25 @@ impl WSRpc {
                 Ok(None) => return Err(RPCError::ConnectionReset),
                 Err(_) => (),
             };
-            let data = data?;
-            let (upload_ok_tx, upload_ok_rx) = oneshot::channel();
-            self.tx
-                .unbounded_send(Op::Uploading(Uploading {
-                    upload_ok_tx,
-                    data,
-                    msg_id,
-                }))
-                .map_err(|_| RPCError::ConnectionReset)?;
-            upload_ok_rx.await.map_err(|_| RPCError::ConnectionReset)?;
+            self.upload_msg(msg_id, data?).await?;
         }
-        let (upload_ok_tx, upload_ok_rx) = oneshot::channel();
-        self.tx
-            .unbounded_send(Op::Uploading(Uploading {
-                upload_ok_tx,
-                data: vec![],
-                msg_id,
-            }))
-            .map_err(|_| RPCError::ConnectionReset)?;
-        upload_ok_rx.await.map_err(|_| RPCError::ConnectionReset)?;
+        self.upload_msg(msg_id, vec![]).await?;
         sender_rx
             .next()
             .await
             .ok_or_else(|| RPCError::ConnectionReset)?
+    }
+    async fn upload_msg(&self, msg_id: u32, data: Vec<u8>) -> RPCResult<()> {
+        let (upload_ok_tx, upload_ok_rx) = oneshot::channel();
+        self.tx
+            .unbounded_send(Op::Uploading(Uploading {
+                upload_ok_tx,
+                data,
+                msg_id,
+            }))
+            .map_err(|_| RPCError::ConnectionReset)?;
+        upload_ok_rx.await.map_err(|_| RPCError::ConnectionReset)?;
+        Ok(())
     }
 }
 

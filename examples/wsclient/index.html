@@ -84,7 +84,7 @@
       }
       async function* upload_stream(id) {
         let i = 0;
-        while (i<10) {
+        while (i < 10) {
           let s = "hi " + i;
           document.getElementById(id).innerText = s;
           yield s;
@@ -92,8 +92,8 @@
           i++;
         }
       }
-      function upload_end(id){
-        return ()=>document.getElementById(id).innerText = "end";
+      function upload_end(id) {
+        return () => document.getElementById(id).innerText = "end";
       }
       function upload() {
         upload_sample(upload_stream("upload_sample"), false).then(upload_end("upload_sample"));

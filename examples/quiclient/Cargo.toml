@@ -1,18 +1,36 @@
 [package]
-name = "quiclient"
-version = "0.1.0"
-authors = ["hjiayz <hjiayz@163.com>"]
-edition = "2018"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+name = 'quiclient'
+version = '0.1.0'
+authors = ['hjiayz <hjiayz@163.com>']
+edition = '2018'
 
 [dependencies]
-todorpc_client_quic = { path = './../../todorpc_client_quic' }
-todorpc = { path = './../../todorpc' }
-serde = { version = "1.0.114", features = ["derive"] }
 lazy_static = "1.4.0"
-define = { path = "../define"}
-tokio = { version = "0.2.21", features = ["fs","io-util","sync","stream","rt-core","macros","time"] }
 quinn = "0.6.1"
 pretty_env_logger = "0.4.0"
 log = "0.4.8"
+
+[dependencies.todorpc_client_quic]
+path = './../../todorpc_client_quic'
+
+[dependencies.todorpc]
+path = './../../todorpc'
+
+[dependencies.serde]
+version = "1.0.114"
+features = ['derive']
+
+[dependencies.define]
+path = '../define'
+
+[dependencies.tokio]
+version = "0.2.21"
+features = [
+    'fs',
+    'io-util',
+    'sync',
+    'stream',
+    'rt-core',
+    'macros',
+    'time',
+]

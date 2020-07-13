@@ -405,30 +405,25 @@ impl TcpClient {
                 Err(Closed) => return Err(Error::ConnectionReset),
                 _ => (),
             }
-            let data = data?;
-            let (upload_ok_tx, upload_ok_rx) = oneshot::channel();
-            self.ops
-                .send(Op::Uploading(Uploading {
-                    upload_ok_tx,
-                    data: data,
-                    msg_id,
-                }))
-                .map_err(|_| Error::ConnectionReset)?;
-            upload_ok_rx.await.map_err(|_| Error::ConnectionReset)?;
+            self.upload_msg(msg_id, data?).await?;
         }
-        let (upload_ok_tx, upload_ok_rx) = oneshot::channel();
-        self.ops
-            .send(Op::Uploading(Uploading {
-                upload_ok_tx,
-                data: vec![],
-                msg_id,
-            }))
-            .map_err(|_| Error::ConnectionReset)?;
-        upload_ok_rx.await.map_err(|_| Error::ConnectionReset)?;
+        self.upload_msg(msg_id, vec![]).await?;
         if let Some(msg) = sender_rx.next().await {
             return Ok(msg);
         };
         Err(Error::ConnectionReset)
+    }
+    async fn upload_msg(&self, msg_id: u32, data: Vec<u8>) -> Result<()> {
+        let (upload_ok_tx, upload_ok_rx) = oneshot::channel();
+        self.ops
+            .send(Op::Uploading(Uploading {
+                upload_ok_tx,
+                data,
+                msg_id,
+            }))
+            .map_err(|_| Error::ConnectionReset)?;
+        upload_ok_rx.await.map_err(|_| Error::ConnectionReset)?;
+        Ok(())
     }
     fn end_req(&self, msg_id: u32) {
         if let Err(_) = self.ops.send(Op::EndNoCall(msg_id)) {

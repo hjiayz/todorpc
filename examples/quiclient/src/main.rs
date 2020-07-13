@@ -14,8 +14,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
     let mut endpoint = quinn::Endpoint::builder();
     let mut client_config = quinn::ClientConfigBuilder::default();
-    let chain: CertificateChain =
-        quinn::CertificateChain::from_pem(&fs::read(&"../server/ca.pem").await.unwrap()).unwrap();
+    let chain: CertificateChain = quinn::CertificateChain::from_pem(
+        &fs::read(&"../server/ca.pem")
+            .await
+            .or(fs::read("examples/server/ca.pem").await)
+            .unwrap(),
+    )
+    .unwrap();
     let cert = chain.into_iter().next().unwrap();
     client_config
         .add_certificate_authority(cert.into())

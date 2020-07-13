@@ -121,17 +121,9 @@ impl QuicClient {
             if bytes.len() > u16::max_value() as usize {
                 return Err(Error::MessageTooBig);
             }
-            let len_buf = (bytes.len() as u16).to_be_bytes();
-            sender.write_all(&len_buf).await.map_err(map_io_error)?;
-            sender.write_all(&bytes).await.map_err(map_io_error)?;
-            sender.flush().await.map_err(map_io_error)?;
+            upload_msg(&mut sender, bytes).await?;
         }
-        let end_pack_buf = (0 as u16).to_be_bytes();
-        sender
-            .write_all(&end_pack_buf)
-            .await
-            .map_err(map_io_error)?;
-        sender.flush().await.map_err(map_io_error)?;
+        upload_msg(&mut sender, vec![]).await?;
         let result = read_result(&mut recv).await?;
         let _ = recv.stop(VarInt::from_u32(0));
         Ok(result)
@@ -239,4 +231,12 @@ impl ConnectInfo {
             delay_for(self.timeout).await
         }
     }
+}
+
+async fn upload_msg(sender: &mut SendStream, bytes: Vec<u8>) -> Result<()> {
+    let len_buf = (bytes.len() as u16).to_be_bytes();
+    sender.write_all(&len_buf).await.map_err(map_io_error)?;
+    sender.write_all(&bytes).await.map_err(map_io_error)?;
+    sender.flush().await.map_err(map_io_error)?;
+    Ok(())
 }
