@@ -15,7 +15,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut endpoint = quinn::Endpoint::builder();
     let mut client_config = quinn::ClientConfigBuilder::default();
     let chain: CertificateChain = quinn::CertificateChain::from_pem(
-        &fs::read(&"../server/ca.pem")
+        &fs::read("../server/ca.pem")
             .await
             .or(fs::read("examples/server/ca.pem").await)
             .unwrap(),
