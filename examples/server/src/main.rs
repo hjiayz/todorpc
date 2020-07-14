@@ -39,10 +39,12 @@ static UPLOAD_ID: AtomicU64 = AtomicU64::new(0);
 async fn upload_sample(res: Result<UploadSample>, ctx: ContextWithUpload<String>) {
     let id = UPLOAD_ID.fetch_add(1, SeqCst);
     res.unwrap();
-    let remote_address = &ctx.connection_info().remote_address();
+    let info = ctx.connection_info();
+    let remote_address = &info.remote_address();
+    let protocol = info.protocol();
     let mut stream = ctx.into_stream();
     while let Some(s) = stream.next().await {
-        println!("{} {} : {}", remote_address, id, s.unwrap());
+        println!("{}://{} {} : {}", protocol, remote_address, id, s.unwrap());
     }
     println!("upload sample finished");
 }

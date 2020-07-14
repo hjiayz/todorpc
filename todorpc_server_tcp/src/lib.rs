@@ -9,18 +9,28 @@ use todorpc_server_core::{IoStream, Server};
 use tokio::io::{ReadHalf, Result as TIoResult, WriteHalf};
 use tokio::net::{TcpListener, TcpStream as TokioTcpStream};
 
+pub struct TcpInfo(String);
+
+impl ConnectionInfo for TcpInfo {
+    fn remote_address(&self) -> String {
+        self.0.clone()
+    }
+    fn protocol(&self) -> &'static str {
+        "tcp"
+    }
+}
 pub struct TcpStream(TokioTcpStream);
 
 impl IoStream for TcpStream {
     type ReadStream = ReadHalf<TokioTcpStream>;
     type WriteStream = WriteHalf<TokioTcpStream>;
     fn connection_info(&self) -> Arc<dyn ConnectionInfo> {
-        Arc::new(
+        Arc::new(TcpInfo(
             self.0
                 .peer_addr()
                 .map(|addr| format!("{}", addr))
                 .unwrap_or_default(),
-        )
+        ))
     }
     fn split(self) -> (Self::ReadStream, Self::WriteStream) {
         let (read, write) = tokio::io::split(self.0);

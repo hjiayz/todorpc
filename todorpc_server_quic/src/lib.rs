@@ -6,7 +6,6 @@ use quinn::Connecting;
 use quinn::Connection;
 use quinn::Incoming;
 use quinn::SendStream;
-use std::mem::transmute;
 use std::sync::Arc;
 use todorpc::{Message, Response};
 pub use todorpc_server_core::{
@@ -20,6 +19,9 @@ pub struct ConnectionHandle(Connection);
 impl ConnectionInfo for ConnectionHandle {
     fn remote_address(&self) -> String {
         format!("{}", self.0.remote_address())
+    }
+    fn protocol(&self) -> &'static str {
+        "quic"
     }
 }
 
@@ -87,14 +89,12 @@ async fn handle_request(
     token: UnboundedSender<TokenCommand>,
     id: u128,
 ) -> Result<()> {
-    let mut buf = [0u8; 6];
-    recv.read_exact(&mut buf).await?;
-    let (len_buf, channel_id_buf): ([u8; 2], [u8; 4]) = unsafe { transmute(buf) };
+    let mut len_buf = [0u8; 2];
+    let mut channel_id_buf = [0u8; 4];
+    recv.read_exact(&mut len_buf).await?;
+    recv.read_exact(&mut channel_id_buf).await?;
     let len = u16::from_be_bytes(len_buf) as usize;
-    let mut msg = Vec::with_capacity(len);
-    unsafe {
-        msg.set_len(len);
-    }
+    let mut msg = vec![0u8; len];
     let channel_id = u32::from_be_bytes(channel_id_buf);
     recv.read_exact(&mut msg).await?;
     let msg = Message { channel_id, msg };
@@ -120,10 +120,7 @@ async fn handle_request(
             if len == 0 {
                 break;
             }
-            let mut msg = Vec::with_capacity(len);
-            unsafe {
-                msg.set_len(len);
-            };
+            let mut msg = vec![0u8; len];
             recv.read_exact(&mut msg).await?;
             if let Err(e) = upload_tx.send(msg) {
                 error!("{:?}", e);

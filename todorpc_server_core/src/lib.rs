@@ -5,7 +5,6 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::marker::PhantomData;
-use std::mem::transmute;
 use std::pin::Pin;
 use std::sync::Arc;
 use todorpc::{
@@ -22,12 +21,7 @@ use tokio::sync::oneshot::{channel, Sender};
 
 pub trait ConnectionInfo: Sync + Send {
     fn remote_address(&self) -> String;
-}
-
-impl ConnectionInfo for String {
-    fn remote_address(&self) -> String {
-        self.to_owned()
-    }
+    fn protocol(&self) -> &'static str;
 }
 
 pub trait IoStream: Send + Sync + 'static {
@@ -38,17 +32,16 @@ pub trait IoStream: Send + Sync + 'static {
 }
 
 pub async fn read_stream<R: AsyncRead + Unpin>(n: &mut R) -> IoResult<(Message, u32)> {
-    let mut h = [0u8; 10];
-    n.read_exact(&mut h).await?;
-    let (len_buf, channel_id_buf, msg_id_buf): ([u8; 2], [u8; 4], [u8; 4]) =
-        unsafe { transmute(h) };
+    let mut len_buf = [0u8; 2];
+    let mut channel_id_buf = [0u8; 4];
+    let mut msg_id_buf = [0u8; 4];
+    n.read_exact(&mut len_buf).await?;
+    n.read_exact(&mut channel_id_buf).await?;
+    n.read_exact(&mut msg_id_buf).await?;
     let len = u16::from_be_bytes(len_buf) as usize;
     let channel_id = u32::from_be_bytes(channel_id_buf);
     let msg_id = u32::from_be_bytes(msg_id_buf);
-    let mut msg_bytes = Vec::with_capacity(len);
-    unsafe {
-        msg_bytes.set_len(len);
-    };
+    let mut msg_bytes = vec![0u8; len];
     n.read_exact(&mut msg_bytes).await?;
     let msg = msg_bytes;
     let msg = Message { channel_id, msg };
@@ -64,9 +57,9 @@ pub async fn write_stream<W: AsyncWrite + Unpin>(
     let len = msg.len();
     let len_buf = (msg.len() as u64).to_be_bytes();
     let msg_id_buf = msg_id.to_be_bytes();
-    let h: [u8; 12] = unsafe { transmute((len_buf, msg_id_buf)) };
     let mut buf = Vec::with_capacity(12 + len);
-    buf.extend_from_slice(&h);
+    buf.extend_from_slice(&len_buf);
+    buf.extend_from_slice(&msg_id_buf);
     buf.extend_from_slice(msg.as_slice());
     n.write_all(&buf).await?;
     n.flush().await?;

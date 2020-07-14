@@ -22,8 +22,6 @@
   <script type="module">
     import init, {
       call_foo,
-      connect_ws,
-      connect_wss,
       subscribe_bar,
       upload_sample,
     } from "./pkg/wsclient.js";
@@ -33,10 +31,6 @@
     async function run() {
       await init();
       console.log("init finished");
-      await connect_ws();
-      console.log("connect websocket finished");
-      await connect_wss();
-      console.log("connect websocket tls finished");
       function bar() {
         subscribe_bar((val) => {
           if (val instanceof Error) {
@@ -95,11 +89,13 @@
       function upload_end(id) {
         return () => document.getElementById(id).innerText = "end";
       }
-      function upload() {
-        upload_sample(upload_stream("upload_sample"), false).then(upload_end("upload_sample"));
+      async function upload() {
+        let id = "upload_sample";
+        upload_sample(upload_stream(id), false).then(upload_end(id));
       }
       function upload_tls() {
-        upload_sample(upload_stream("upload_sample_tls"), true).then(upload_end("upload_sample_tls"));
+        let id = "upload_sample_tls";
+        upload_sample(upload_stream(id), true).then(upload_end(id));
       }
       bar_tls();
       bar();

@@ -98,17 +98,28 @@ impl<S: AsyncWrite + AsyncRead + Sync + Send + Unpin + 'static> AsyncWrite for W
     }
 }
 
+pub struct WsInfo(String);
+
+impl ConnectionInfo for WsInfo {
+    fn remote_address(&self) -> String {
+        self.0.clone()
+    }
+    fn protocol(&self) -> &'static str {
+        "ws"
+    }
+}
+
 impl IoStream for WsStream<TcpStream> {
     type ReadStream = WsRead<TcpStream>;
     type WriteStream = WsWrite<TcpStream>;
     fn connection_info(&self) -> Arc<dyn ConnectionInfo> {
-        Arc::new(
+        Arc::new(WsInfo(
             self.0
                 .get_ref()
                 .peer_addr()
                 .map(|addr| format!("{}", addr))
                 .unwrap_or_default(),
-        )
+        ))
     }
     fn split(self) -> (Self::ReadStream, Self::WriteStream) {
         let (sink, stream) = self.0.split();
@@ -122,18 +133,29 @@ impl IoStream for WsStream<TcpStream> {
     }
 }
 
+pub struct WssInfo(String);
+
+impl ConnectionInfo for WssInfo {
+    fn remote_address(&self) -> String {
+        self.0.clone()
+    }
+    fn protocol(&self) -> &'static str {
+        "wss"
+    }
+}
+
 impl IoStream for WsStream<ATlsStream<TcpStream>> {
     type ReadStream = WsRead<ATlsStream<TcpStream>>;
     type WriteStream = WsWrite<ATlsStream<TcpStream>>;
     fn connection_info(&self) -> Arc<dyn ConnectionInfo> {
-        Arc::new(
+        Arc::new(WssInfo(
             self.0
                 .get_ref()
                 .get_ref()
                 .peer_addr()
                 .map(|addr| format!("{}", addr))
                 .unwrap_or_default(),
-        )
+        ))
     }
     fn split(self) -> (Self::ReadStream, Self::WriteStream) {
         let (sink, stream) = self.0.split();

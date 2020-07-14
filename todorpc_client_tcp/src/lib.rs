@@ -40,17 +40,15 @@ fn upload(channel_id: u32, data: &[u8], msg_id: u32) -> Result<Vec<u8>> {
 }
 
 async fn read_msg_async<R: AsyncRead + Unpin>(n: &mut R) -> Result<(Vec<u8>, u32)> {
-    use std::mem::transmute;
-    let mut h = [0u8; 12];
-    n.read_exact(&mut h).await.map_err(map_io_err)?;
-    let (len_buf, msg_id_buf): ([u8; 8], [u8; 4]) = unsafe { transmute(h) };
+    let mut len_buf = [0u8; 8];
+    let mut msg_id_buf = [0u8; 4];
+    n.read_exact(&mut len_buf).await.map_err(map_io_err)?;
+    n.read_exact(&mut msg_id_buf).await.map_err(map_io_err)?;
     let len = u64::from_be_bytes(len_buf) as usize;
     let msg_id = u32::from_be_bytes(msg_id_buf);
 
-    let mut msg_bytes = Vec::with_capacity(len);
-    unsafe {
-        msg_bytes.set_len(len);
-    };
+    let mut msg_bytes = vec![0u8; len];
+
     n.read_exact(&mut msg_bytes).await.map_err(map_io_err)?;
     let msg = msg_bytes;
     Ok((msg, msg_id))

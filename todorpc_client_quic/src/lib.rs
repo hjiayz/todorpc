@@ -46,10 +46,7 @@ async fn read_result<D: DeserializeOwned, R: AsyncReadExt + Unpin>(recv: &mut R)
     let mut len_buf = [0u8; 8];
     recv.read_exact(&mut len_buf).await.map_err(map_io_error)?;
     let len = u64::from_be_bytes(len_buf) as usize;
-    let mut msg_bytes = Vec::with_capacity(len);
-    unsafe {
-        msg_bytes.set_len(len);
-    };
+    let mut msg_bytes = vec![0u8; len];
     recv.read_exact(&mut msg_bytes)
         .await
         .map_err(map_io_error)?;

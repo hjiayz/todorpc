@@ -1,30 +1,44 @@
 use define::*;
-use futures::channel::mpsc;
+use futures::channel::{mpsc, oneshot};
 use futures::stream::StreamExt;
 use js_sys::{AsyncIterator, Error, Function, Object, Promise};
+use lazy_static::lazy_static;
+use log::debug;
 use todorpc_web::WSRpc;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::{future_to_promise, spawn_local, JsFuture};
 
-#[wasm_bindgen]
-extern "C" {
-    #[wasm_bindgen(js_namespace = console)]
-    fn log(s: &str);
+fn connect(uri: &'static str) -> mpsc::UnboundedSender<oneshot::Sender<WSRpc>> {
+    let (tx, mut rx) = mpsc::unbounded::<oneshot::Sender<WSRpc>>();
+    spawn_local(async move {
+        let rpc = WSRpc::connect(uri, 5000).await;
+        debug!("connect {} finished", uri);
+        while let Some(ws_tx) = rx.next().await {
+            let _ = ws_tx.send(rpc.clone());
+        }
+    });
+    tx
 }
 
-static mut CONN: Option<WSRpc> = None;
-static mut TLSCONN: Option<WSRpc> = None;
-
-async fn connect() -> Result<JsValue, JsValue> {
-    let rpc = WSRpc::connect("ws://localhost:8080/", 5000).await;
-    unsafe { CONN = Some(rpc) };
-    Ok(JsValue::UNDEFINED)
+lazy_static! {
+    static ref CONN: mpsc::UnboundedSender<oneshot::Sender<WSRpc>> =
+        connect("ws://localhost:8080/");
+    static ref TLSCONN: mpsc::UnboundedSender<oneshot::Sender<WSRpc>> =
+        connect("wss://localhost:8082/");
 }
 
-async fn tlsconnect() -> Result<JsValue, JsValue> {
-    let rpc = WSRpc::connect("wss://localhost:8082/", 5000).await;
-    unsafe { TLSCONN = Some(rpc) };
-    Ok(JsValue::UNDEFINED)
+async fn get_connect(conn: &mpsc::UnboundedSender<oneshot::Sender<WSRpc>>) -> WSRpc {
+    let (tx, rx) = oneshot::channel();
+    let _ = conn.unbounded_send(tx);
+    rx.await.unwrap()
+}
+
+async fn get_conn(is_tls: bool) -> WSRpc {
+    if is_tls {
+        get_connect(&TLSCONN).await
+    } else {
+        get_connect(&CONN).await
+    }
 }
 
 #[wasm_bindgen(start)]
@@ -34,24 +48,8 @@ pub fn start_init() {
     console_log::init_with_level(Level::Trace).expect("error initializing log");
 }
 
-#[wasm_bindgen]
-pub fn connect_ws() -> Promise {
-    future_to_promise(connect())
-}
-
-#[wasm_bindgen]
-pub fn connect_wss() -> Promise {
-    future_to_promise(tlsconnect())
-}
-
 async fn async_call_foo(val: u32, is_tls: bool) -> Result<JsValue, JsValue> {
-    let con = unsafe {
-        if is_tls {
-            TLSCONN.as_ref().unwrap()
-        } else {
-            CONN.as_ref().unwrap()
-        }
-    };
+    let con = get_conn(is_tls).await;
     con.call(Foo(val))
         .await
         .map(JsValue::from)
@@ -65,14 +63,8 @@ pub fn call_foo(val: u32, is_tls: bool) -> Promise {
 
 #[wasm_bindgen]
 pub fn subscribe_bar(cb: Function, is_tls: bool) {
-    let con = unsafe {
-        if is_tls {
-            TLSCONN.as_ref().unwrap()
-        } else {
-            CONN.as_ref().unwrap()
-        }
-    };
     spawn_local(async move {
+        let con = get_conn(is_tls).await;
         let mut stream = match con.subscribe(Bar) {
             Ok(stream) => stream,
             Err(e) => {
@@ -101,13 +93,7 @@ pub fn subscribe_bar(cb: Function, is_tls: bool) {
 }
 
 async fn async_upload_sample(stream: AsyncIterator, is_tls: bool) -> Result<JsValue, JsValue> {
-    let con = unsafe {
-        if is_tls {
-            TLSCONN.as_ref().unwrap()
-        } else {
-            CONN.as_ref().unwrap()
-        }
-    };
+    let con = get_conn(is_tls).await;
     let (tx, rx) = mpsc::unbounded();
     spawn_local(async move {
         while let Ok(promise) = stream.next() {
