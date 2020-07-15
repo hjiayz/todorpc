@@ -78,3 +78,19 @@ macro_rules! subs {
         define!(Subscribe $name[$id]->$ret);
     };
 }
+
+#[macro_export]
+macro_rules! upload {
+    ($name:ty[$id:literal]($upload:ty)->$ret:ty) => {
+        impl RPC for $name {
+            type Return = $ret;
+            fn rpc_channel() -> u32 {
+                $id
+            }
+        }
+
+        impl Upload for $name {
+            type UploadStream = $upload;
+        }
+    };
+}

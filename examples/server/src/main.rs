@@ -1,4 +1,5 @@
 use define::*;
+use futures::future::TryFutureExt;
 use log::{error, info};
 use native_tls::{Identity, TlsAcceptor};
 use pretty_env_logger::formatted_builder;
@@ -108,8 +109,8 @@ async fn main() {
         .filter_level(log::LevelFilter::Debug)
         .init();
     let mut file = File::open("localhost.p12")
+        .or_else(|_| File::open("./examples/server/localhost.p12"))
         .await
-        .or(File::open("./examples/server/localhost.p12").await)
         .unwrap();
     let mut identity = vec![];
     file.read_to_end(&mut identity).await.unwrap();

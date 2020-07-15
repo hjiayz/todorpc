@@ -1,4 +1,5 @@
 use define::*;
+use futures::future::TryFutureExt;
 use pretty_env_logger::formatted_builder;
 use quinn::CertificateChain;
 use todorpc_client_quic::QuicClient;
@@ -16,8 +17,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut client_config = quinn::ClientConfigBuilder::default();
     let chain: CertificateChain = quinn::CertificateChain::from_pem(
         &fs::read("../server/ca.pem")
+            .or_else(|_| fs::read("examples/server/ca.pem"))
             .await
-            .or(fs::read("examples/server/ca.pem").await)
             .unwrap(),
     )
     .unwrap();
