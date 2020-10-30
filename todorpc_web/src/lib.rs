@@ -173,7 +173,7 @@ async fn ws_run(
     req_tx
 }
 
-async fn connect(url: String, timeout: i32) -> mpsc::UnboundedSender<Op> {
+fn connect(url: String, timeout: i32) -> (mpsc::UnboundedSender<Op>,mpsc::UnboundedReceiver<()>) {
     let (tx, mut rx) = mpsc::unbounded();
     let (open_tx, mut open_rx) = mpsc::unbounded();
     let tx_ref = tx.clone();
@@ -292,8 +292,7 @@ async fn connect(url: String, timeout: i32) -> mpsc::UnboundedSender<Op> {
             }
         }
     });
-    open_rx.next().await;
-    tx
+    (tx,open_rx)
 }
 
 #[derive(Clone)]
@@ -309,7 +308,12 @@ type SubscribeInnerResult = RPCResult<(
 
 impl WSRpc {
     pub async fn connect(url: &str, timeout: i32) -> WSRpc {
-        let tx = connect(url.to_owned(), timeout).await;
+        let (tx, mut opened) = connect(url.to_owned(), timeout);
+        opened.next().await;
+        WSRpc { tx, timeout }
+    }
+    pub fn connect_maybe_open(url: &str, timeout: i32) -> WSRpc {
+        let (tx, _) = connect(url.to_owned(), timeout);
         WSRpc { tx, timeout }
     }
     pub async fn call<C: Call>(&self, params: C) -> RPCResult<C::Return> {
